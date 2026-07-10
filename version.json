@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "platform": "android",
+  "packageName": "com.douduoyu.app",
+  "channel": "stable",
+  "latest": {
+    "versionCode": 1,
+    "versionName": "1.0",
+    "publishedAt": "2026-07-10",
+    "minSupportedVersionCode": 1,
+    "forceUpdate": false,
+    "title": "\u62fc\u8c46\u9c7c 1.0",
+    "summary": "\u5f53\u524d\u516c\u5f00\u7248\u672c\u3002\u540e\u7eed\u6b63\u5f0f\u7248 APK \u53d1\u5e03\u540e\uff0c\u53ea\u9700\u8981\u66f4\u65b0 versionCode\u3001versionName\u3001\u4e0b\u8f7d\u94fe\u63a5\u548c\u6821\u9a8c\u4fe1\u606f\u3002",
+    "changelog": [
+      "\u66f4\u65b0\u591a\u54c1\u724c\u62fc\u8c46\u914d\u8272\u6570\u636e\u548c\u989c\u8272\u7f6e\u4fe1\u5ea6\u4fe1\u606f",
+      "\u4f18\u5316\u884c\u5217\u53f7\u663e\u793a\u4e0e\u88c1\u526a\u540e\u8ba1\u6570\u903b\u8f91",
+      "\u4fee\u590d\u5168\u5c4f\u5207\u6362\u65f6\u753b\u5e03\u4f4d\u7f6e\u8df3\u52a8",
+      "\u65bd\u5de5\u6a21\u5f0f\u9009\u62e9\u652f\u6301\u6309\u9879\u76ee\u6301\u4e45\u5316"
+    ],
+    "download": {
+      "pageUrl": "https://wwaqe.lanzouq.com/irFJK3vkdxef",
+      "password": "xiaoyu",
+      "apkUrl": "",
+      "mirrorUrls": [],
+      "sha256": "",
+      "sizeBytes": 0
+    }
+  }
+}
