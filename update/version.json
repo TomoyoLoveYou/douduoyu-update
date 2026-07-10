@@ -4,12 +4,12 @@
   "packageName": "com.douduoyu.app",
   "channel": "stable",
   "latest": {
-    "versionCode": 2,
-    "versionName": "1.1",
+    "versionCode": 3,
+    "versionName": "1.2",
     "publishedAt": "2026-07-10",
     "minSupportedVersionCode": 1,
     "forceUpdate": false,
-    "title": "\u62fc\u8c46\u9c7c 1.1",
+    "title": "\u62fc\u8c46\u9c7c 1.2",
     "summary": "\u7248\u672c\u66f4\u65b0\u6d4b\u8bd5\u7248\u3002\u8fd9\u4e2a\u7248\u672c\u7528\u4e8e\u9a8c\u8bc1\u8bbe\u7f6e\u9875\u68c0\u67e5\u66f4\u65b0\u548c\u5916\u90e8\u6d4f\u89c8\u5668\u6253\u5f00\u6d41\u7a0b\u3002",
     "changelog": [
       "\u66f4\u65b0\u591a\u54c1\u724c\u62fc\u8c46\u914d\u8272\u6570\u636e\u548c\u989c\u8272\u7f6e\u4fe1\u5ea6\u4fe1\u606f",
@@ -19,7 +19,7 @@
       "\u65b0\u589e\u8bbe\u7f6e\u9875\u68c0\u67e5\u66f4\u65b0\u548c\u6253\u5f00\u4e0b\u8f7d\u94fe\u63a5"
     ],
     "download": {
-      "pageUrl": "https://wwaqe.lanzouq.com/iGAV63vl3gaf",
+      "pageUrl": "https://wwaqe.lanzouq.com/iug013vlnksh",
       "password": "xiaoyu",
       "apkUrl": "",
       "mirrorUrls": [],
