@@ -1,0 +1,55 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
+*.bak
+
+# Logs
+*.log
+
+# IDE
+.idea/
+*.iml
+android/.idea/
+
+# Gradle / Android build outputs
+.gradle/
+build/
+**/build/
+android/.gradle/
+android/build/
+android/app/build/
+
+# Local machine configuration
+local.properties
+**/local.properties
+
+# Android generated/native folders
+.cxx/
+.externalNativeBuild/
+captures/
+.navigation/
+lint/intermediates/
+lint/generated/
+lint/outputs/
+lint/tmp/
+
+# Packaged artifacts
+*.apk
+*.aab
+*.aar
+*.ap_
+*.dex
+*.class
+*.hprof
+android/app/release/
+
+# Signing keys
+*.jks
+*.keystore
+
+# Temporary research/source scrape artifacts
+tmp_*
+_tmp_*

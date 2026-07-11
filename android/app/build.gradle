@@ -1,0 +1,460 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+
+def appIconWorkspaceDir = new File(rootProject.rootDir, '../../output/imagegen').canonicalFile
+def curatedAppIconDir = new File(appIconWorkspaceDir, 'app-icons')
+def generatedAppIconRootDir = new File(buildDir, 'generated/app-icons')
+def generatedAppIconResDir = new File(generatedAppIconRootDir, 'res')
+def generatedAppIconDrawableDir = new File(generatedAppIconResDir, 'drawable-nodpi')
+def generatedAppIconSplashDrawableDir = new File(generatedAppIconResDir, 'drawable')
+def generatedAppIconValuesDir = new File(generatedAppIconResDir, 'values')
+def generatedAppIconManifestFile = new File(generatedAppIconRootDir, 'AndroidManifest.xml')
+def generatedAppIconSourceRootDir = new File(buildDir, 'generated/source/app-icons/kotlin')
+def generatedAppIconSourceDir = new File(generatedAppIconSourceRootDir, 'com/douduoyu/app')
+def appIconManifestTemplateFile = file('src/main/AndroidManifest.xml')
+def supportedAppIconExtensions = ['png', 'webp'] as Set
+def launcherIconPaddingFraction = 0.04d
+def splashIconPaddingFraction = 0.16d
+def generatedAppIconCanvasSize = 1024
+def defaultAppIconId = 'fish_left_official_rose_transparent'
+
+def loadAppIconSourceFiles = {
+    curatedAppIconDir.mkdirs()
+    return (
+        curatedAppIconDir.listFiles()?.findAll { file ->
+            file.isFile() &&
+                supportedAppIconExtensions.contains(
+                    file.name.substring(file.name.lastIndexOf('.') + 1).toLowerCase(Locale.US),
+                )
+        } ?: []
+    ).sort { it.name.toLowerCase(Locale.US) }
+}
+
+def slugifyAppIconId = { String fileName ->
+    def baseName = fileName.replaceFirst(/\.[^.]+$/, '')
+    def normalized =
+        baseName
+            .toLowerCase(Locale.US)
+            .replaceAll(/[^a-z0-9]+/, '_')
+            .replaceAll(/_+/, '_')
+            .replaceAll(/^_+|_+$/, '')
+    if (!normalized) {
+        return 'icon'
+    }
+    return Character.isDigit(normalized.charAt(0)) ? "icon_${normalized}" : normalized
+}
+
+def aliasSuffixForAppIcon = { String iconId ->
+    return iconId.split('_').collect { part ->
+        part ? part.substring(0, 1).toUpperCase(Locale.US) + part.substring(1) : ''
+    }.join('')
+}
+
+def displayNameForAppIcon = { String fileName ->
+    def baseName = fileName.replaceFirst(/\.[^.]+$/, '')
+    def cleaned =
+        baseName
+            .replaceAll(/(?:-|_)transparent$/, '')
+            .replaceAll(/[_-]+/, ' ')
+            .trim()
+            .replaceFirst(/(?i)^(fish left|fish right)\s+/, '')
+    if (!cleaned) {
+        return '未命名图标'
+    }
+    return cleaned.split(/\s+/).collect { token ->
+        token ? token.substring(0, 1).toUpperCase(Locale.US) + token.substring(1) : ''
+    }.join(' ')
+}
+
+def escapeKotlinString = { String value ->
+    return value
+        .replace('\\', '\\\\')
+        .replace('"', '\\"')
+}
+
+def writeNormalizedAppIcon = { File sourceFile, File targetFile, double paddingFraction ->
+    def sourceImage = javax.imageio.ImageIO.read(sourceFile)
+    if (sourceImage == null) {
+        throw new GradleException("Unsupported app icon file: ${sourceFile.name}")
+    }
+
+    int minX = sourceImage.width
+    int minY = sourceImage.height
+    int maxX = -1
+    int maxY = -1
+    for (int y = 0; y < sourceImage.height; y++) {
+        for (int x = 0; x < sourceImage.width; x++) {
+            if (((sourceImage.getRGB(x, y) >>> 24) & 0xFF) > 0) {
+                if (x < minX) minX = x
+                if (y < minY) minY = y
+                if (x > maxX) maxX = x
+                if (y > maxY) maxY = y
+            }
+        }
+    }
+
+    if (maxX < minX || maxY < minY) {
+        throw new GradleException("App icon file contains no visible pixels: ${sourceFile.name}")
+    }
+
+    int contentWidth = maxX - minX + 1
+    int contentHeight = maxY - minY + 1
+    double maxContentSize = generatedAppIconCanvasSize * (1.0d - (paddingFraction * 2.0d))
+    double scale = Math.min(maxContentSize / contentWidth, maxContentSize / contentHeight)
+    int drawWidth = Math.max(1, Math.round(contentWidth * scale) as int)
+    int drawHeight = Math.max(1, Math.round(contentHeight * scale) as int)
+    int drawX = ((generatedAppIconCanvasSize - drawWidth) / 2.0d).round() as int
+    int drawY = ((generatedAppIconCanvasSize - drawHeight) / 2.0d).round() as int
+
+    def outputImage =
+        new java.awt.image.BufferedImage(
+            generatedAppIconCanvasSize,
+            generatedAppIconCanvasSize,
+            java.awt.image.BufferedImage.TYPE_INT_ARGB,
+        )
+    def graphics = outputImage.createGraphics()
+    try {
+        graphics.setComposite(java.awt.AlphaComposite.Src)
+        graphics.setRenderingHint(
+            java.awt.RenderingHints.KEY_INTERPOLATION,
+            java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC,
+        )
+        graphics.setRenderingHint(
+            java.awt.RenderingHints.KEY_RENDERING,
+            java.awt.RenderingHints.VALUE_RENDER_QUALITY,
+        )
+        graphics.setRenderingHint(
+            java.awt.RenderingHints.KEY_ANTIALIASING,
+            java.awt.RenderingHints.VALUE_ANTIALIAS_ON,
+        )
+        graphics.setBackground(new java.awt.Color(0, 0, 0, 0))
+        graphics.clearRect(0, 0, generatedAppIconCanvasSize, generatedAppIconCanvasSize)
+        graphics.drawImage(
+            sourceImage,
+            drawX,
+            drawY,
+            drawX + drawWidth,
+            drawY + drawHeight,
+            minX,
+            minY,
+            maxX + 1,
+            maxY + 1,
+            null,
+        )
+    } finally {
+        graphics.dispose()
+    }
+
+    targetFile.parentFile.mkdirs()
+    javax.imageio.ImageIO.write(outputImage, 'png', targetFile)
+}
+
+task generateAppIconResources {
+    doLast {
+        delete generatedAppIconRootDir
+        delete generatedAppIconSourceRootDir
+
+        generatedAppIconDrawableDir.mkdirs()
+        generatedAppIconSplashDrawableDir.mkdirs()
+        generatedAppIconValuesDir.mkdirs()
+        generatedAppIconSourceDir.mkdirs()
+
+        def icons = []
+        def usedIds = [] as Set
+        loadAppIconSourceFiles().each { File sourceFile ->
+            def baseId = slugifyAppIconId(sourceFile.name)
+            def uniqueId = baseId
+            def duplicateIndex = 2
+            while (usedIds.contains(uniqueId)) {
+                uniqueId = "${baseId}_${duplicateIndex++}"
+            }
+            usedIds.add(uniqueId)
+            def extension = sourceFile.name.substring(sourceFile.name.lastIndexOf('.') + 1).toLowerCase(Locale.US)
+            icons << [
+                id             : uniqueId,
+                label          : displayNameForAppIcon(sourceFile.name),
+                launcherSimpleName: "MainActivityIcon${aliasSuffixForAppIcon(uniqueId)}Launcher",
+                themeName      : "AppTheme.NoActionBarLaunch.${aliasSuffixForAppIcon(uniqueId)}",
+                launcherResourceName : "dd_app_icon_${uniqueId}",
+                splashResourceName   : "dd_app_icon_${uniqueId}_splash",
+                sourceFile     : sourceFile,
+                extension      : extension,
+            ]
+        }
+
+        def defaultIcon = icons.find { icon -> icon.id == defaultAppIconId }
+        if (defaultIcon == null) {
+            throw new GradleException("Default app icon '${defaultAppIconId}' was not found in ${curatedAppIconDir}")
+        }
+        def selectableIcons = icons.findAll { icon -> icon.id != defaultAppIconId }
+
+        icons.each { icon ->
+            writeNormalizedAppIcon(
+                icon.sourceFile,
+                new File(generatedAppIconDrawableDir, "${icon.launcherResourceName}.png"),
+                launcherIconPaddingFraction,
+            )
+            writeNormalizedAppIcon(
+                icon.sourceFile,
+                new File(generatedAppIconSplashDrawableDir, "${icon.splashResourceName}.png"),
+                splashIconPaddingFraction,
+            )
+        }
+
+        def launcherEntries = new StringBuilder()
+        launcherEntries << '''
+        <activity
+            android:name=".MainActivityDefaultLauncher"
+            android:enabled="true"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/AppTheme.NoActionBarLaunch.Default" />
+
+        <activity
+            android:name=".MainActivityDefaultHomeLauncher"
+            android:enabled="true"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/AppTheme.NoActionBarLaunch.Default" />
+
+        <activity
+            android:name=".MainActivityDefaultIconLauncher"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@drawable/''' + defaultIcon.launcherResourceName + '''"
+            android:label="@string/app_name"
+            android:theme="@style/AppTheme.NoActionBarLaunch.Default">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>'''.stripIndent()
+        icons.each { icon ->
+            launcherEntries << """
+
+        <activity
+            android:name=".${icon.launcherSimpleName}"
+            android:enabled="${icon.id == defaultAppIconId ? 'true' : 'false'}"
+            android:exported="true"
+            android:icon="@drawable/${icon.launcherResourceName}"
+            android:label="@string/app_name"
+            android:theme="@style/${icon.themeName}">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>""".stripIndent()
+        }
+
+        def manifestTemplate = appIconManifestTemplateFile.getText('UTF-8')
+        if (!manifestTemplate.contains('<!-- APP_ICON_LAUNCHERS -->')) {
+            throw new GradleException('AndroidManifest.xml template is missing APP_ICON_LAUNCHERS placeholder.')
+        }
+        def manifestWithDefaultIcon =
+            manifestTemplate
+                .replace(
+                    'android:icon="@mipmap/ic_launcher"',
+                    "android:icon=\"@drawable/${defaultIcon.launcherResourceName}\"",
+                ).replace(
+                    'android:roundIcon="@mipmap/ic_launcher_round"',
+                    "android:roundIcon=\"@drawable/${defaultIcon.launcherResourceName}\"",
+                )
+        generatedAppIconManifestFile.setText(
+            manifestWithDefaultIcon.replace('<!-- APP_ICON_LAUNCHERS -->', launcherEntries.toString()),
+            'UTF-8',
+        )
+
+        def launchThemeEntries = new StringBuilder()
+        launchThemeEntries << '''
+    <style name="AppTheme.NoActionBarLaunch.Default" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/''' + defaultIcon.splashResourceName + '''</item>
+        <item name="postSplashScreenTheme">@style/AppTheme</item>
+    </style>'''.stripIndent()
+        icons.each { icon ->
+            launchThemeEntries << """
+
+    <style name="${icon.themeName}" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/${icon.splashResourceName}</item>
+        <item name="postSplashScreenTheme">@style/AppTheme</item>
+    </style>""".stripIndent()
+        }
+        new File(generatedAppIconValuesDir, 'generated_app_icon_themes.xml').setText(
+            """<?xml version="1.0" encoding="utf-8"?>
+<resources>
+${launchThemeEntries.toString()}
+</resources>
+""",
+            'UTF-8',
+        )
+
+        def optionEntries = new StringBuilder()
+        optionEntries << '''
+        AppIconOption(
+            id = "default",
+            label = "默认",
+            previewResId = R.mipmap.ic_launcher_foreground,
+            componentClassName = "com.douduoyu.app.MainActivityDefaultIconLauncher",
+            isDefault = true,
+        )'''.stripIndent()
+        icons.each { icon ->
+            optionEntries << """
+,
+        AppIconOption(
+            id = "${escapeKotlinString(icon.id)}",
+            label = "${escapeKotlinString(icon.label)}",
+            previewResId = R.drawable.${icon.launcherResourceName},
+            componentClassName = "com.douduoyu.app.${icon.launcherSimpleName}",
+            isDefault = false,
+        )""".stripIndent()
+        }
+
+        optionEntries = new StringBuilder()
+        optionEntries << """
+        AppIconOption(
+            id = "${escapeKotlinString(defaultIcon.id)}",
+            label = "${escapeKotlinString(defaultIcon.label)}",
+            previewResId = R.drawable.${defaultIcon.launcherResourceName},
+            componentClassName = "com.douduoyu.app.${defaultIcon.launcherSimpleName}",
+            isDefault = true,
+        )""".stripIndent()
+        selectableIcons.each { icon ->
+            optionEntries << """
+,
+        AppIconOption(
+            id = "${escapeKotlinString(icon.id)}",
+            label = "${escapeKotlinString(icon.label)}",
+            previewResId = R.drawable.${icon.launcherResourceName},
+            componentClassName = "com.douduoyu.app.${icon.launcherSimpleName}",
+            isDefault = false,
+        )""".stripIndent()
+        }
+
+        def launcherClassEntries = new StringBuilder()
+        launcherClassEntries << '''
+class MainActivityDefaultLauncher : MainActivity()
+
+class MainActivityDefaultHomeLauncher : MainActivity()
+
+class MainActivityDefaultIconLauncher : MainActivity()
+'''.stripIndent()
+        icons.each { icon ->
+            launcherClassEntries << """
+
+class ${icon.launcherSimpleName} : MainActivity()""".stripIndent()
+        }
+        new File(generatedAppIconSourceDir, 'GeneratedLauncherActivities.kt').setText(
+            """package com.douduoyu.app
+
+${launcherClassEntries.toString()}
+""",
+            'UTF-8',
+        )
+
+        new File(generatedAppIconSourceDir, 'GeneratedAppIconRegistry.kt').setText(
+            """package com.douduoyu.app
+
+import androidx.annotation.AnyRes
+
+internal data class AppIconOption(
+    val id: String,
+    val label: String,
+    @AnyRes val previewResId: Int,
+    val componentClassName: String,
+    val isDefault: Boolean,
+)
+
+internal object AppIconRegistry {
+    val options: List<AppIconOption> = listOf(
+${optionEntries.toString()}
+    )
+
+    val defaultOption: AppIconOption
+        get() = options.first { it.isDefault }
+}
+""",
+            'UTF-8',
+        )
+    }
+}
+
+android {
+    namespace = "com.douduoyu.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+
+    sourceSets {
+        main {
+            manifest.srcFile "$buildDir/generated/app-icons/AndroidManifest.xml"
+            res.srcDirs += ["$buildDir/generated/app-icons/res"]
+            java.srcDirs += ["$buildDir/generated/source/app-icons/kotlin"]
+        }
+    }
+
+    defaultConfig {
+        applicationId "com.douduoyu.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 3
+        versionName "1.2"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+
+    buildFeatures {
+        compose true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion rootProject.ext.composeCompilerVersion
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+
+    kotlinOptions {
+        jvmTarget = '21'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+preBuild.dependsOn(generateAppIconResources)
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.activity:activity-compose:$androidxActivityVersion"
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.core:core-ktx:$androidxCoreVersion"
+    implementation "androidx.compose.foundation:foundation:$composeUiVersion"
+    implementation "androidx.compose.material:material-icons-extended:$composeUiVersion"
+    implementation "androidx.compose.material3:material3:$composeMaterial3Version"
+    implementation "androidx.compose.ui:ui:$composeUiVersion"
+    implementation "androidx.compose.ui:ui-tooling-preview:$composeUiVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation "com.vanniktech:android-image-cropper:4.7.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    debugImplementation "androidx.compose.ui:ui-tooling:$composeUiVersion"
+}
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
