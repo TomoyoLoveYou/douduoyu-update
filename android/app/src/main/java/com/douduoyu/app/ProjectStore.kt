@@ -3,6 +3,7 @@ package com.douduoyu.app
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -30,7 +31,7 @@ class ProjectStore(context: Context) {
                     for (index in 0 until array.length()) {
                         add(readProject(array.getJSONObject(index)))
                     }
-                }.sortedByDescending { it.updatedAt }
+                }.orderedByMostRecent()
             }.getOrElse {
                 val seed = syncDemoProject(emptyList())
                 saveProjects(seed)
@@ -62,6 +63,7 @@ class ProjectStore(context: Context) {
         val nextDemo =
             if (shouldRefreshDemo) {
                 buildDemoProject(iconOption, PatternEngine.DEMO_PROJECT_ID)
+                    ?.preservingUpdatedAtIfEquivalentTo(existingDemo)
                     ?: existingDemo
                     ?: PatternEngine.demoProject()
             } else {
@@ -79,7 +81,7 @@ class ProjectStore(context: Context) {
         preferences.edit().putString(DEMO_ICON_ID_KEY, iconOption.id).apply()
 
         val others = projects.filterNot { it.id == PatternEngine.DEMO_PROJECT_ID }
-        return listOf(nextDemo) + archivedProjects + others
+        return (listOf(nextDemo) + archivedProjects + others).orderedByMostRecent()
     }
 
     fun isDemoProject(project: BeadProject): Boolean = project.id == PatternEngine.DEMO_PROJECT_ID
@@ -96,6 +98,7 @@ class ProjectStore(context: Context) {
         cleanupRemovedProjectBoardViewports(projects)
         val array = JSONArray()
         projects.forEach { project ->
+            val encodedCells = ProjectCellsCodec.encode(project.cells)
             array.put(
                 JSONObject()
                     .put("id", project.id)
@@ -104,22 +107,81 @@ class ProjectStore(context: Context) {
                     .put("height", project.height)
                     .put("paletteMode", project.paletteMode.name)
                     .put("colorScheme", project.colorScheme.name)
+                    .put("customColorSchemeId", project.customColorSchemeId ?: JSONObject.NULL)
                     .put("beadsPerPack", project.beadsPerPack)
                     .put("sourceKind", project.sourceKind.name)
                     .put("sourceImagePath", project.sourceImagePath ?: JSONObject.NULL)
-                    .put("updatedAt", project.updatedAt)
                     .put(
-                        "cells",
+                        "stitchSourceRegions",
                         JSONArray().apply {
-                            project.cells.forEach { code ->
-                                put(code ?: JSONObject.NULL)
+                            project.stitchSourceRegions.forEach { region ->
+                                put(
+                                    JSONObject()
+                                        .put("sourceProjectId", region.sourceProjectId)
+                                        .put("sourceTitle", region.sourceTitle)
+                                        .put("left", region.left)
+                                        .put("top", region.top)
+                                        .put("width", region.width)
+                                        .put("height", region.height),
+                                )
                             }
                         },
-                    ),
+                    )
+                    .put("updatedAt", project.updatedAt)
+                    .put("cellsCodec", ProjectCellsCodec.FORMAT)
+                    .put("cellsCount", encodedCells.cellCount)
+                    .put("cellsPalette", JSONArray(encodedCells.palette))
+                    .put("cellsData", Base64.encodeToString(encodedCells.payload, Base64.NO_WRAP)),
             )
         }
 
         preferences.edit().putString(KEY, array.toString()).apply()
+    }
+
+    internal fun loadGridGuideSettings(): GridGuideSettings =
+        GridGuideSettings(
+            enabled = preferences.getBoolean(GRID_GUIDE_ENABLED_KEY, true),
+            interval = preferences.getInt(GRID_GUIDE_INTERVAL_KEY, GridGuideSettings.DEFAULT_INTERVAL),
+            lineWidthDp =
+                preferences.getFloat(
+                    GRID_GUIDE_LINE_WIDTH_DP_KEY,
+                    GridGuideSettings.DEFAULT_LINE_WIDTH_DP,
+                ),
+            colorArgb = preferences.getInt(GRID_GUIDE_COLOR_ARGB_KEY, GridGuideSettings.DEFAULT_COLOR_ARGB),
+        ).normalized()
+
+    internal fun saveGridGuideSettings(settings: GridGuideSettings) {
+        val normalized = settings.normalized()
+        preferences
+            .edit()
+            .putBoolean(GRID_GUIDE_ENABLED_KEY, normalized.enabled)
+            .putInt(GRID_GUIDE_INTERVAL_KEY, normalized.interval)
+            .putFloat(GRID_GUIDE_LINE_WIDTH_DP_KEY, normalized.lineWidthDp)
+            .putInt(GRID_GUIDE_COLOR_ARGB_KEY, normalized.colorArgb)
+            .apply()
+    }
+
+    internal fun hasShownSplitMoveTutorial(): Boolean =
+        preferences.getBoolean(SPLIT_MOVE_TUTORIAL_SHOWN_KEY, false)
+
+    internal fun markSplitMoveTutorialShown() {
+        preferences.edit().putBoolean(SPLIT_MOVE_TUTORIAL_SHOWN_KEY, true).apply()
+    }
+
+    internal fun loadSplitBoardSize(): Pair<Int, Int> =
+        preferences.getInt(SPLIT_BOARD_WIDTH_KEY, DEFAULT_SPLIT_BOARD_SIZE).coerceAtLeast(1) to
+            preferences.getInt(SPLIT_BOARD_HEIGHT_KEY, DEFAULT_SPLIT_BOARD_SIZE).coerceAtLeast(1)
+
+    internal fun saveSplitBoardSize(
+        width: Int,
+        height: Int,
+    ) {
+        if (width <= 0 || height <= 0) return
+        preferences
+            .edit()
+            .putInt(SPLIT_BOARD_WIDTH_KEY, width)
+            .putInt(SPLIT_BOARD_HEIGHT_KEY, height)
+            .apply()
     }
 
     fun loadProjectResumeScreen(projectId: String): AppScreen {
@@ -216,31 +278,49 @@ class ProjectStore(context: Context) {
         preferences.edit().putString(BOARD_VIEWPORT_KEY, payload.toString()).apply()
     }
 
-    fun loadProjectCompletedCellIndices(project: BeadProject): Set<Int> {
-        val raw = preferences.getString(COMPLETED_CELLS_KEY, null)?.takeIf { it.isNotBlank() } ?: return emptySet()
+    internal fun loadProjectCompletedCellIndices(project: BeadProject): CellIndexMask {
+        val raw = preferences.getString(COMPLETED_CELLS_KEY, null)?.takeIf { it.isNotBlank() }
+            ?: return CellIndexMask.empty()
         return runCatching {
             val payload = JSONObject(raw)
-            val stored = payload.optJSONArray(project.id) ?: return emptySet()
-            buildSet {
-                for (index in 0 until stored.length()) {
-                    val cellIndex = stored.optInt(index, -1)
-                    if (cellIndex in project.cells.indices && project.cells[cellIndex] != null) {
-                        add(cellIndex)
+            val stored = payload.opt(project.id) ?: return CellIndexMask.empty()
+            val builder = CellIndexMask.builder()
+            when (stored) {
+                is JSONArray -> {
+                    for (index in 0 until stored.length()) {
+                        val cellIndex = stored.optInt(index, -1)
+                        if (cellIndex in project.cells.indices && project.cells[cellIndex] != null) {
+                            builder.add(cellIndex)
+                        }
+                    }
+                }
+
+                is JSONObject -> {
+                    if (stored.optString("format") == COMPLETED_CELLS_FORMAT) {
+                        val encoded = Base64.decode(stored.getString("data"), Base64.DEFAULT)
+                        CellIndexMask.fromByteArray(encoded).forEach { cellIndex ->
+                            if (cellIndex in project.cells.indices && project.cells[cellIndex] != null) {
+                                builder.add(cellIndex)
+                            }
+                        }
                     }
                 }
             }
-        }.getOrDefault(emptySet())
+            builder.build()
+        }.getOrDefault(CellIndexMask.empty())
     }
 
     fun saveProjectCompletedCellIndices(
         project: BeadProject,
         indices: Set<Int>,
     ) {
-        val normalized =
-            indices
-                .filter { index -> index in project.cells.indices && project.cells[index] != null }
-                .distinct()
-                .sorted()
+        val normalizedBuilder = CellIndexMask.builder()
+        indices.forEach { index ->
+            if (index in project.cells.indices && project.cells[index] != null) {
+                normalizedBuilder.add(index)
+            }
+        }
+        val normalized = normalizedBuilder.build()
         val payload =
             runCatching {
                 JSONObject(preferences.getString(COMPLETED_CELLS_KEY, null)?.takeIf { it.isNotBlank() } ?: "{}")
@@ -252,9 +332,9 @@ class ProjectStore(context: Context) {
         } else {
             payload.put(
                 project.id,
-                JSONArray().apply {
-                    normalized.forEach(::put)
-                },
+                JSONObject()
+                    .put("format", COMPLETED_CELLS_FORMAT)
+                    .put("data", Base64.encodeToString(normalized.toByteArray(), Base64.NO_WRAP)),
             )
         }
         preferences.edit().putString(COMPLETED_CELLS_KEY, payload.toString()).apply()
@@ -292,31 +372,87 @@ class ProjectStore(context: Context) {
     private fun readProject(json: JSONObject): BeadProject {
         val paletteMode = readPaletteMode(json)
         val colorScheme = readColorScheme(json, paletteMode)
-        val cellsArray = json.getJSONArray("cells")
-        val cells = buildList<String?> {
-            for (index in 0 until cellsArray.length()) {
-                add(
-                    BeadPalette.normalizeStoredCode(
-                        code = if (cellsArray.isNull(index)) null else cellsArray.getString(index),
-                        scheme = colorScheme,
-                    ),
-                )
-            }
-        }
+        val width = json.optInt("width", 29).coerceAtLeast(1)
+        val height = json.optInt("height", 29).coerceAtLeast(1)
+        val cells = readProjectCells(json, colorScheme, width, height)
 
         return BeadProject(
             id = json.optString("id", ""),
             title = json.optString("title", "豆豆鱼图纸"),
-            width = json.optInt("width", 29),
-            height = json.optInt("height", 29),
+            width = width,
+            height = height,
             cells = cells,
             paletteMode = paletteMode,
             colorScheme = colorScheme,
+            customColorSchemeId = json.optNullableString("customColorSchemeId"),
             beadsPerPack = json.optInt("beadsPerPack", 500).coerceAtLeast(1),
             sourceKind = readProjectSourceKind(json),
-            sourceImagePath = json.optString("sourceImagePath", "").ifBlank { null },
+            sourceImagePath = json.optNullableString("sourceImagePath"),
+            stitchSourceRegions = readStitchSourceRegions(json),
             updatedAt = json.optLong("updatedAt", System.currentTimeMillis()),
         )
+    }
+
+    private fun readProjectCells(
+        json: JSONObject,
+        colorScheme: ColorSchemePreset,
+        width: Int,
+        height: Int,
+    ): List<String?> {
+        val encodedCells =
+            if (json.optString("cellsCodec") == ProjectCellsCodec.FORMAT) {
+                runCatching {
+                    val paletteArray = json.getJSONArray("cellsPalette")
+                    val palette = List(paletteArray.length()) { index -> paletteArray.getString(index) }
+                    val payload = Base64.decode(json.getString("cellsData"), Base64.DEFAULT)
+                    ProjectCellsCodec.decode(
+                        palette = palette,
+                        payload = payload,
+                        cellCount = json.optInt("cellsCount", -1),
+                    )
+                }.getOrNull()
+            } else {
+                null
+            }
+        val storedCells =
+            encodedCells ?: runCatching {
+                val cellsArray = json.getJSONArray("cells")
+                List<String?>(cellsArray.length()) { index ->
+                    if (cellsArray.isNull(index)) null else cellsArray.getString(index)
+                }
+            }.getOrNull()
+        val expectedCellCount =
+            (width.toLong() * height.toLong())
+                .coerceAtMost(Int.MAX_VALUE.toLong())
+                .toInt()
+        return if (storedCells != null && storedCells.size == expectedCellCount) {
+            storedCells.map { code -> BeadPalette.normalizeStoredCode(code = code, scheme = colorScheme) }
+        } else {
+            List(expectedCellCount) { null }
+        }
+    }
+
+    private fun readStitchSourceRegions(json: JSONObject): List<StitchSourceRegion> {
+        val array = json.optJSONArray("stitchSourceRegions") ?: return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                if (size >= MAX_STITCH_SOURCE_REGIONS) break
+                val item = array.optJSONObject(index) ?: continue
+                val width = item.optInt("width", 0)
+                val height = item.optInt("height", 0)
+                if (width <= 0 || height <= 0) continue
+                add(
+                    StitchSourceRegion(
+                        sourceProjectId = item.optString("sourceProjectId", ""),
+                        sourceTitle = item.optString("sourceTitle", "来源项目"),
+                        left = item.optInt("left", 0),
+                        top = item.optInt("top", 0),
+                        width = width,
+                        height = height,
+                    ),
+                )
+            }
+        }
     }
 
     private fun readPaletteMode(json: JSONObject): PaletteMode {
@@ -528,7 +664,7 @@ class ProjectStore(context: Context) {
         left: BeadProject,
         right: BeadProject,
     ): Boolean {
-        return left.copy(updatedAt = 0L, sourceImagePath = null) == right.copy(updatedAt = 0L, sourceImagePath = null)
+        return sameProjectContentIgnoringTimestamp(left, right)
     }
 
     private companion object {
@@ -536,7 +672,42 @@ class ProjectStore(context: Context) {
         const val RESUME_SCREEN_KEY = "project_resume_screens_json"
         const val BUILD_MODE_KEY = "project_build_modes_json"
         const val COMPLETED_CELLS_KEY = "project_completed_cells_json"
+        const val COMPLETED_CELLS_FORMAT = "bitset-v1"
         const val BOARD_VIEWPORT_KEY = "project_board_viewports_json"
         const val DEMO_ICON_ID_KEY = "demo_icon_id"
+        const val GRID_GUIDE_ENABLED_KEY = "grid_guide_enabled"
+        const val GRID_GUIDE_INTERVAL_KEY = "grid_guide_interval"
+        const val GRID_GUIDE_LINE_WIDTH_DP_KEY = "grid_guide_line_width_dp"
+        const val GRID_GUIDE_COLOR_ARGB_KEY = "grid_guide_color_argb"
+        const val SPLIT_MOVE_TUTORIAL_SHOWN_KEY = "split_move_tutorial_shown"
+        const val SPLIT_BOARD_WIDTH_KEY = "split_board_width"
+        const val SPLIT_BOARD_HEIGHT_KEY = "split_board_height"
+        const val DEFAULT_SPLIT_BOARD_SIZE = 29
+        const val MAX_STITCH_SOURCE_REGIONS = 64
     }
+}
+
+internal fun List<BeadProject>.orderedByMostRecent(): List<BeadProject> =
+    sortedByDescending { it.updatedAt }
+
+internal fun BeadProject.preservingUpdatedAtIfEquivalentTo(existing: BeadProject?): BeadProject {
+    return if (existing != null && sameProjectContentIgnoringTimestamp(this, existing)) {
+        copy(updatedAt = existing.updatedAt)
+    } else {
+        this
+    }
+}
+
+private fun sameProjectContentIgnoringTimestamp(
+    left: BeadProject,
+    right: BeadProject,
+): Boolean {
+    return left.copy(updatedAt = 0L, sourceImagePath = null) == right.copy(updatedAt = 0L, sourceImagePath = null)
+}
+
+private fun JSONObject.optNullableString(key: String): String? {
+    if (!has(key) || isNull(key)) {
+        return null
+    }
+    return optString(key, "").trim().takeIf { it.isNotEmpty() }
 }

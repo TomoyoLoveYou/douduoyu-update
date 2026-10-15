@@ -14,6 +14,7 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
+import kotlin.coroutines.cancellation.CancellationException
 
 private data class StyleProfile(
     val sampleSide: Int,
@@ -25,21 +26,48 @@ private data class StyleProfile(
     val useAverageFallback: Boolean,
 )
 
-private data class SampledCell(
-    val samples: List<IntArray>,
-    val average: IntArray?,
-    val backgroundShare: Double,
-)
+private data class SampledGrid(
+    val samples: IntArray,
+    val sampleCounts: ByteArray,
+    val averageRgb: IntArray,
+    val backgroundCounts: ByteArray,
+    val samplesPerCell: Int,
+) {
+    val cellCount: Int
+        get() = sampleCounts.size
+
+    fun sampleCount(cellIndex: Int): Int = sampleCounts[cellIndex].toInt() and 0xFF
+
+    fun backgroundShare(cellIndex: Int): Double =
+        (backgroundCounts[cellIndex].toInt() and 0xFF) / samplesPerCell.toDouble()
+}
+
+private class QuantizedPaletteLookup(
+    private val candidates: List<PaletteColor>,
+) {
+    private val nearestIndices = IntArray(1 shl 15) { -1 }
+
+    fun nearestIndex(rgb: Int): Int {
+        val key = (((rgb ushr 16 and 0xFF) ushr 3) shl 10) or
+            (((rgb ushr 8 and 0xFF) ushr 3) shl 5) or
+            ((rgb and 0xFF) ushr 3)
+        val cached = nearestIndices[key]
+        if (cached >= 0) {
+            return cached
+        }
+
+        val red = (((key ushr 10) and 0x1F) shl 3) + 4
+        val green = (((key ushr 5) and 0x1F) shl 3) + 4
+        val blue = ((key and 0x1F) shl 3) + 4
+        return BeadPalette.nearestIndex(red.coerceAtMost(255), green.coerceAtMost(255), blue.coerceAtMost(255), candidates)
+            .also { nearestIndices[key] = it }
+    }
+}
 
 private data class RankedPaletteColor(
     val color: PaletteColor,
     val count: Int,
     val score: Double,
-)
-
-private data class MajorityColor(
-    val colorCode: String?,
-    val count: Int,
 )
 
 data class ChartGridEstimate(
@@ -119,9 +147,20 @@ object PatternEngine {
         return output
     }
 
-    fun generateProject(source: Bitmap, settings: GenerationSettings): BeadProject {
-        val outputWidth = settings.width.coerceAtLeast(1)
-        val outputHeight = settings.height.coerceAtLeast(1)
+    fun generateProject(
+        source: Bitmap,
+        settings: GenerationSettings,
+        shouldCancel: () -> Boolean = { false },
+    ): BeadProject {
+        checkCancelled(shouldCancel)
+        val outputDimensions = OutputSizePolicy.constrainDimensions(settings.width, settings.height)
+        val outputWidth = outputDimensions.width
+        val outputHeight = outputDimensions.height
+        val outputCellCountLong = outputWidth.toLong() * outputHeight.toLong()
+        require(outputCellCountLong in 1L..OutputSizePolicy.MAX_TOTAL_CELLS.toLong()) {
+            "Pattern dimensions exceed the supported cell count."
+        }
+        val outputCellCount = outputCellCountLong.toInt()
         val cropRect = cropRect(
             imageWidth = source.width,
             imageHeight = source.height,
@@ -132,21 +171,15 @@ object PatternEngine {
             offsetY = settings.cropY,
         )
 
-        val samplingWidth = cropRect.width().coerceAtLeast(1)
-        val samplingHeight = cropRect.height().coerceAtLeast(1)
-        val sampledBitmap = Bitmap.createBitmap(samplingWidth, samplingHeight, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(sampledBitmap)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            isFilterBitmap = true
-        }
-        canvas.drawBitmap(source, cropRect, Rect(0, 0, samplingWidth, samplingHeight), paint)
-
-        val pixels = IntArray(samplingWidth * samplingHeight)
-        sampledBitmap.getPixels(pixels, 0, samplingWidth, 0, 0, samplingWidth, samplingHeight)
-
-        val activePalette = BeadPalette.palette(settings.colorScheme)
+        val activePalette = BeadPalette.palette(settings.colorScheme, settings.customColorSchemeId)
         val paletteLimit = settings.maxColors.coerceAtMost(activePalette.size).coerceAtLeast(2)
-        val profile = styleProfile(settings.generationStyle)
+        val baseProfile = styleProfile(settings.generationStyle)
+        val profile = baseProfile.copy(
+            sampleSide = effectiveSampleSide(
+                baseSampleSide = baseProfile.sampleSide,
+                cellCount = outputCellCount,
+            ),
+        )
         val requestedSpeckle = settings.speckleReduction.coerceIn(0, 4)
         val speckleStrength =
             if (requestedSpeckle > 0) {
@@ -155,19 +188,53 @@ object PatternEngine {
                 0
             }
 
-        val detectedBackgroundColor = estimateBackgroundColor(pixels, samplingWidth, samplingHeight)
-        val sampledCells = sampleGridCells(
-            pixels = pixels,
-            sourceWidth = samplingWidth,
-            sourceHeight = samplingHeight,
-            outputWidth = outputWidth,
-            outputHeight = outputHeight,
-            settings = settings,
-            detectedBackgroundColor = detectedBackgroundColor,
-            profile = profile,
-            speckleStrength = speckleStrength,
-        )
-        val ranked = rankPaletteColors(sampledCells, paletteLimit, activePalette, profile)
+        val detectedBackgroundColor = estimateBackgroundColor(source, cropRect)
+        checkCancelled(shouldCancel)
+        val samplingWidth = samplingBitmapDimension(cropRect.width(), outputWidth, profile.sampleSide)
+        val samplingHeight = samplingBitmapDimension(cropRect.height(), outputHeight, profile.sampleSide)
+        val samplingBitmap = Bitmap.createBitmap(samplingWidth, samplingHeight, Bitmap.Config.ARGB_8888)
+        val pixels =
+            try {
+                Canvas(samplingBitmap).drawBitmap(
+                    source,
+                    cropRect,
+                    Rect(0, 0, samplingWidth, samplingHeight),
+                    Paint().apply {
+                        isAntiAlias = false
+                        isFilterBitmap = false
+                        isDither = false
+                    },
+                )
+                checkCancelled(shouldCancel)
+                val sampledPixels = IntArray(samplingWidth * samplingHeight)
+                samplingBitmap.getPixels(
+                    sampledPixels,
+                    0,
+                    samplingWidth,
+                    0,
+                    0,
+                    samplingWidth,
+                    samplingHeight,
+                )
+                sampledPixels
+            } finally {
+                samplingBitmap.recycle()
+            }
+        checkCancelled(shouldCancel)
+        val sampledGrid =
+            sampleGridCells(
+                pixels = pixels,
+                sourceWidth = samplingWidth,
+                sourceHeight = samplingHeight,
+                outputWidth = outputWidth,
+                outputHeight = outputHeight,
+                settings = settings,
+                detectedBackgroundColor = detectedBackgroundColor,
+                profile = profile,
+                speckleStrength = speckleStrength,
+                shouldCancel = shouldCancel,
+            )
+        val ranked = rankPaletteColors(sampledGrid, paletteLimit, activePalette, profile, shouldCancel)
         val candidates = selectCandidateColors(
             ranked = ranked,
             maxColors = paletteLimit,
@@ -175,10 +242,17 @@ object PatternEngine {
             strength = speckleStrength,
             profile = profile,
         )
-        val chosenCells = sampledCells.map { chooseCellColor(it, candidates, profile) }
+        val chosenCells = chooseCellColors(sampledGrid, candidates, profile, shouldCancel)
+        checkCancelled(shouldCancel)
         val merged = mergeSimilarColors(chosenCells, speckleStrength, candidates)
-        val compact = reduceTinyRegions(merged, outputWidth, outputHeight, speckleStrength, candidates)
-        val reduced = reduceSpeckles(compact, outputWidth, outputHeight, speckleStrength, candidates)
+        checkCancelled(shouldCancel)
+        val compact = reduceTinyRegions(merged, outputWidth, outputHeight, speckleStrength, candidates, shouldCancel)
+        val reducedIndices = reduceSpeckles(compact, outputWidth, outputHeight, speckleStrength, candidates, shouldCancel)
+        checkCancelled(shouldCancel)
+        val reduced = ArrayList<String?>(outputCellCount)
+        reducedIndices.forEach { colorIndex ->
+            reduced += if (colorIndex >= 0) candidates[colorIndex].id else null
+        }
 
         return BeadProject(
             title = settings.title.ifBlank { "\u8c46\u8c46\u9c7c\u56fe\u7eb8" },
@@ -187,6 +261,7 @@ object PatternEngine {
             cells = reduced,
             paletteMode = settings.colorScheme.paletteMode,
             colorScheme = settings.colorScheme,
+            customColorSchemeId = settings.customColorSchemeId,
             updatedAt = System.currentTimeMillis(),
         )
     }
@@ -251,7 +326,7 @@ object PatternEngine {
         title: String = settings.title,
         ignoreWatermark: Boolean = true,
     ): BeadProject {
-        val activePalette = BeadPalette.palette(settings.colorScheme)
+        val activePalette = BeadPalette.palette(settings.colorScheme, settings.customColorSchemeId)
         val estimate = estimateChartGrid(source)
         val normalized = normalizeBitmapForRecognition(source, maxEdge = CHART_RECOGNITION_MAX_EDGE)
         val pixels = IntArray(normalized.width * normalized.height)
@@ -318,6 +393,7 @@ object PatternEngine {
             cells = cells,
             paletteMode = settings.colorScheme.paletteMode,
             colorScheme = settings.colorScheme,
+            customColorSchemeId = settings.customColorSchemeId,
             sourceKind = ProjectSourceKind.ChartRecognition,
             updatedAt = System.currentTimeMillis(),
         )
@@ -450,6 +526,24 @@ object PatternEngine {
         return if (style == GenerationStyle.Realistic) realisticProfile else cartoonProfile
     }
 
+    private fun effectiveSampleSide(baseSampleSide: Int, cellCount: Int): Int {
+        return when {
+            cellCount >= 40_000 -> min(baseSampleSide, 3)
+            cellCount >= 16_000 -> min(baseSampleSide, 5)
+            else -> baseSampleSide
+        }
+    }
+
+    internal fun samplingBitmapDimension(
+        cropDimension: Int,
+        outputDimension: Int,
+        sampleSide: Int,
+    ): Int {
+        val safeCropDimension = cropDimension.coerceAtLeast(1)
+        val requestedSamples = outputDimension.coerceAtLeast(1).toLong() * sampleSide.coerceAtLeast(1)
+        return min(safeCropDimension.toLong(), requestedSamples).coerceAtLeast(1L).toInt()
+    }
+
     private fun sampleGridCells(
         pixels: IntArray,
         sourceWidth: Int,
@@ -460,13 +554,53 @@ object PatternEngine {
         detectedBackgroundColor: IntArray,
         profile: StyleProfile,
         speckleStrength: Int,
-    ): List<SampledCell> {
-        val cells = ArrayList<SampledCell>(outputWidth * outputHeight)
+        shouldCancel: () -> Boolean,
+    ): SampledGrid {
+        val cellCountLong = outputWidth.toLong() * outputHeight.toLong()
+        require(cellCountLong in 1L..OutputSizePolicy.MAX_TOTAL_CELLS.toLong())
+        val cellCount = cellCountLong.toInt()
         val totalSamples = profile.sampleSide * profile.sampleSide
+        val sampleStorageSize = (cellCountLong * totalSamples.toLong()).also {
+            require(it <= Int.MAX_VALUE.toLong())
+        }.toInt()
+        val samples = IntArray(sampleStorageSize)
+        val sampleCounts = ByteArray(cellCount)
+        val averageRgb = IntArray(cellCount) { -1 }
+        val backgroundCounts = ByteArray(cellCount)
+        val sampleXPositions = IntArray(outputWidth * profile.sampleSide)
+        val sampleYPositions = IntArray(outputHeight * profile.sampleSide)
+
+        for (x in 0 until outputWidth) {
+            for (sampleX in 0 until profile.sampleSide) {
+                sampleXPositions[x * profile.sampleSide + sampleX] =
+                    min(
+                        sourceWidth - 1,
+                        max(
+                            0,
+                            floor(((x + (sampleX + 0.5) / profile.sampleSide) / outputWidth) * sourceWidth).toInt(),
+                        ),
+                    )
+            }
+        }
+        for (y in 0 until outputHeight) {
+            for (sampleY in 0 until profile.sampleSide) {
+                sampleYPositions[y * profile.sampleSide + sampleY] =
+                    min(
+                        sourceHeight - 1,
+                        max(
+                            0,
+                            floor(((y + (sampleY + 0.5) / profile.sampleSide) / outputHeight) * sourceHeight).toInt(),
+                        ),
+                    )
+            }
+        }
 
         for (y in 0 until outputHeight) {
+            checkCancelled(shouldCancel)
             for (x in 0 until outputWidth) {
-                val samples = ArrayList<IntArray>(totalSamples)
+                val cellIndex = y * outputWidth + x
+                val sampleOffset = cellIndex * totalSamples
+                var sampleCount = 0
                 var backgroundCount = 0
                 var redTotal = 0
                 var greenTotal = 0
@@ -474,104 +608,103 @@ object PatternEngine {
 
                 for (sampleY in 0 until profile.sampleSide) {
                     for (sampleX in 0 until profile.sampleSide) {
-                        val sourceX =
-                            min(
-                                sourceWidth - 1,
-                                max(
-                                    0,
-                                    kotlin.math.floor(
-                                        ((x + (sampleX + 0.5) / profile.sampleSide) / outputWidth) * sourceWidth,
-                                    ).toInt(),
-                                ),
-                            )
-                        val sourcePixelY =
-                            min(
-                                sourceHeight - 1,
-                                max(
-                                    0,
-                                    kotlin.math.floor(
-                                        ((y + (sampleY + 0.5) / profile.sampleSide) / outputHeight) * sourceHeight,
-                                    ).toInt(),
-                                ),
-                            )
+                        val sourceX = sampleXPositions[x * profile.sampleSide + sampleX]
+                        val sourcePixelY = sampleYPositions[y * profile.sampleSide + sampleY]
                         val pixel = pixels[sourcePixelY * sourceWidth + sourceX]
                         val alpha = pixel ushr 24 and 0xFF
-                        val rgb = intArrayOf(pixel shr 16 and 0xFF, pixel shr 8 and 0xFF, pixel and 0xFF)
-                        if (isBackgroundSample(alpha, rgb, settings, detectedBackgroundColor)) {
+                        val red = pixel shr 16 and 0xFF
+                        val green = pixel shr 8 and 0xFF
+                        val blue = pixel and 0xFF
+                        if (isBackgroundSample(alpha, red, green, blue, settings, detectedBackgroundColor)) {
                             backgroundCount += 1
                             continue
                         }
-                        val simplified = simplifySourceRgb(rgb, speckleStrength)
-                        samples += simplified
-                        redTotal += simplified[0]
-                        greenTotal += simplified[1]
-                        blueTotal += simplified[2]
+                        val simplified = simplifySourceRgb(red, green, blue, speckleStrength)
+                        samples[sampleOffset + sampleCount++] = simplified
+                        redTotal += simplified ushr 16 and 0xFF
+                        greenTotal += simplified ushr 8 and 0xFF
+                        blueTotal += simplified and 0xFF
                     }
                 }
 
-                cells +=
-                    SampledCell(
-                        samples = samples,
-                        average =
-                            if (samples.isNotEmpty()) {
-                                intArrayOf(
-                                    (redTotal / samples.size.toDouble()).roundToInt(),
-                                    (greenTotal / samples.size.toDouble()).roundToInt(),
-                                    (blueTotal / samples.size.toDouble()).roundToInt(),
-                                )
-                            } else {
-                                null
-                            },
-                        backgroundShare = backgroundCount / totalSamples.toDouble(),
-                    )
+                sampleCounts[cellIndex] = sampleCount.toByte()
+                backgroundCounts[cellIndex] = backgroundCount.toByte()
+                if (sampleCount > 0) {
+                    averageRgb[cellIndex] =
+                        packRgb(
+                            (redTotal / sampleCount.toDouble()).roundToInt(),
+                            (greenTotal / sampleCount.toDouble()).roundToInt(),
+                            (blueTotal / sampleCount.toDouble()).roundToInt(),
+                        )
+                }
             }
         }
 
-        return cells
+        return SampledGrid(
+            samples = samples,
+            sampleCounts = sampleCounts,
+            averageRgb = averageRgb,
+            backgroundCounts = backgroundCounts,
+            samplesPerCell = totalSamples,
+        )
     }
 
     private fun rankPaletteColors(
-        sampledCells: List<SampledCell>,
+        sampledGrid: SampledGrid,
         maxColors: Int,
         activePalette: List<PaletteColor>,
         profile: StyleProfile,
+        shouldCancel: () -> Boolean,
     ): List<RankedPaletteColor> {
-        val counts = linkedMapOf<String, Pair<PaletteColor, Int>>()
+        val counts = IntArray(activePalette.size)
+        val paletteLookup = QuantizedPaletteLookup(activePalette)
         var total = 0
+        val cellStride = max(1, (sampledGrid.cellCount + 15_999) / 16_000)
 
-        sampledCells.forEach { cell ->
-            if (cell.backgroundShare >= profile.backgroundThreshold || cell.samples.isEmpty()) {
-                return@forEach
+        for (index in 0 until sampledGrid.cellCount) {
+            if (index % 512 == 0) {
+                checkCancelled(shouldCancel)
             }
-            cell.samples.forEach { rgb ->
+            if (index % cellStride != 0) {
+                continue
+            }
+            val sampleCount = sampledGrid.sampleCount(index)
+            if (sampledGrid.backgroundShare(index) >= profile.backgroundThreshold || sampleCount == 0) {
+                continue
+            }
+            val sampleOffset = index * sampledGrid.samplesPerCell
+            for (sampleIndex in 0 until sampleCount) {
+                val rgb = sampledGrid.samples[sampleOffset + sampleIndex]
                 total += 1
-                val color = BeadPalette.nearest(rgb[0], rgb[1], rgb[2], activePalette)
-                val current = counts[color.id]
-                counts[color.id] = color to ((current?.second ?: 0) + 1)
+                val colorIndex = paletteLookup.nearestIndex(rgb)
+                counts[colorIndex] += 1
             }
         }
 
         val rows =
-            counts.values
-                .map { (color, count) ->
-                    val chroma = colorChroma(intArrayOf(color.red, color.green, color.blue))
-                    val share = if (total > 0) count / total.toDouble() else 0.0
-                    val lightness = luminance(intArrayOf(color.red, color.green, color.blue))
-                    val accentBoost =
-                        when {
-                            chroma > 48 -> 2.25
-                            chroma > 28 -> 1.4
-                            else -> 1.0
-                        }
-                    val minorityAccentBoost = if (chroma > 58 && share < 0.018) 2.45 else 1.0
-                    val darkLineBoost = if (lightness < 48) 1.55 else 1.0
-                    val lightNeutralPenalty = if (lightness > 210 && chroma < 22) 0.82 else 1.0
-                    RankedPaletteColor(
-                        color = color,
-                        count = count,
-                        score = count * accentBoost * minorityAccentBoost * darkLineBoost * lightNeutralPenalty,
-                    )
+            activePalette.mapIndexedNotNull { index, color ->
+                val count = counts[index]
+                if (count <= 0) {
+                    return@mapIndexedNotNull null
                 }
+                val chroma = colorChroma(color.red, color.green, color.blue)
+                val share = if (total > 0) count / total.toDouble() else 0.0
+                val lightness = luminance(color.red, color.green, color.blue)
+                val accentBoost =
+                    when {
+                        chroma > 48 -> 2.25
+                        chroma > 28 -> 1.4
+                        else -> 1.0
+                    }
+                val minorityAccentBoost = if (chroma > 58 && share < 0.018) 2.45 else 1.0
+                val darkLineBoost = if (lightness < 48) 1.55 else 1.0
+                val lightNeutralPenalty = if (lightness > 210 && chroma < 22) 0.82 else 1.0
+                RankedPaletteColor(
+                    color = color,
+                    count = count,
+                    score = count * accentBoost * minorityAccentBoost * darkLineBoost * lightNeutralPenalty,
+                )
+            }
                 .sortedWith(compareByDescending<RankedPaletteColor> { it.score }.thenByDescending { it.count })
 
         return if (rows.isNotEmpty()) {
@@ -659,63 +792,141 @@ object PatternEngine {
         return if (selected.isNotEmpty()) selected else activePalette.take(maxColors)
     }
 
-    private fun chooseCellColor(
-        cell: SampledCell,
+    private fun chooseCellColors(
+        sampledGrid: SampledGrid,
         candidates: List<PaletteColor>,
         profile: StyleProfile,
-    ): String? {
-        if (cell.backgroundShare >= profile.backgroundThreshold || cell.samples.isEmpty()) {
-            return null
-        }
+        shouldCancel: () -> Boolean,
+    ): IntArray {
+        val chosenCells = IntArray(sampledGrid.cellCount) { -1 }
+        val paletteLookup = QuantizedPaletteLookup(candidates)
+        val counts = IntArray(candidates.size)
+        val touchedIndices = IntArray(min(sampledGrid.samplesPerCell, candidates.size))
+        for (cellIndex in 0 until sampledGrid.cellCount) {
+            if (cellIndex % 512 == 0) {
+                checkCancelled(shouldCancel)
+            }
+            val sampleCount = sampledGrid.sampleCount(cellIndex)
+            if (sampledGrid.backgroundShare(cellIndex) >= profile.backgroundThreshold || sampleCount == 0) {
+                continue
+            }
 
-        val counts = linkedMapOf<String, Pair<PaletteColor, Int>>()
-        cell.samples.forEach { rgb ->
-            val color = BeadPalette.nearest(rgb[0], rgb[1], rgb[2], candidates)
-            val current = counts[color.id]
-            counts[color.id] = color to ((current?.second ?: 0) + 1)
-        }
+            var touchedCount = 0
+            val sampleOffset = cellIndex * sampledGrid.samplesPerCell
+            for (sampleIndex in 0 until sampleCount) {
+                val rgb = sampledGrid.samples[sampleOffset + sampleIndex]
+                val colorIndex = paletteLookup.nearestIndex(rgb)
+                if (counts[colorIndex] == 0) {
+                    touchedIndices[touchedCount++] = colorIndex
+                }
+                counts[colorIndex] += 1
+            }
 
-        val ranked =
-            counts.values
-                .map { RankedPaletteColor(color = it.first, count = it.second, score = it.second.toDouble()) }
-                .sortedByDescending { it.count }
-        val primary = ranked.firstOrNull() ?: return null
-        val primaryShare = primary.count / cell.samples.size.toDouble()
-        if (primaryShare >= profile.dominanceThreshold || !profile.useAverageFallback || cell.average == null) {
-            return primary.color.id
-        }
+            var primaryIndex = -1
+            var primaryCount = 0
+            for (touchedIndex in 0 until touchedCount) {
+                val colorIndex = touchedIndices[touchedIndex]
+                val count = counts[colorIndex]
+                if (count > primaryCount || (count == primaryCount && colorIndex < primaryIndex)) {
+                    primaryIndex = colorIndex
+                    primaryCount = count
+                }
+                counts[colorIndex] = 0
+            }
+            if (primaryIndex < 0) {
+                continue
+            }
 
-        return BeadPalette.nearest(cell.average[0], cell.average[1], cell.average[2], candidates).id
+            val primaryShare = primaryCount / sampleCount.toDouble()
+            val average = sampledGrid.averageRgb[cellIndex]
+            chosenCells[cellIndex] =
+                if (primaryShare >= profile.dominanceThreshold || !profile.useAverageFallback || average < 0) {
+                    primaryIndex
+                } else {
+                    paletteLookup.nearestIndex(average)
+                }
+        }
+        return chosenCells
     }
 
     private fun reduceSpeckles(
-        cells: List<String?>,
+        cells: IntArray,
         width: Int,
         height: Int,
         strength: Int,
         candidates: List<PaletteColor>,
-    ): List<String?> {
+        shouldCancel: () -> Boolean,
+    ): IntArray {
         val iterations = clampStrength(strength)
         if (iterations == 0) {
             return cells
         }
 
-        val colorMap = candidates.associateBy { it.id }
-        var next = cells.toMutableList()
+        var current = cells
+        val neighborColors = IntArray(8)
+        val neighborCounts = IntArray(8)
 
         repeat(iterations) { pass ->
-            val current = next.toList()
-            next = current.toMutableList()
+            checkCancelled(shouldCancel)
+            val next = current.copyOf()
 
             for (y in 0 until height) {
+                if (y % 16 == 0) {
+                    checkCancelled(shouldCancel)
+                }
                 for (x in 0 until width) {
                     val index = y * width + x
-                    val colorCode = current[index] ?: continue
-                    val neighbors = neighborColorIds(current, width, height, x, y)
-                    val sameCount = neighbors.count { it == colorCode }
-                    val majority = majorityColor(neighbors)
-                    val majorityCode = majority.colorCode ?: continue
-                    if (!areSimilarColors(colorMap[colorCode], colorMap[majorityCode], strength, rare = false)) {
+                    val colorIndex = current[index]
+                    if (colorIndex < 0) {
+                        continue
+                    }
+                    var sameCount = 0
+                    var uniqueNeighborCount = 0
+                    for (deltaY in -1..1) {
+                        for (deltaX in -1..1) {
+                            if (deltaX == 0 && deltaY == 0) {
+                                continue
+                            }
+                            val nextX = x + deltaX
+                            val nextY = y + deltaY
+                            if (nextX !in 0 until width || nextY !in 0 until height) {
+                                continue
+                            }
+                            val neighborColor = current[nextY * width + nextX]
+                            if (neighborColor == colorIndex) {
+                                sameCount += 1
+                            }
+                            if (neighborColor < 0) {
+                                continue
+                            }
+                            var neighborSlot = -1
+                            for (slot in 0 until uniqueNeighborCount) {
+                                if (neighborColors[slot] == neighborColor) {
+                                    neighborSlot = slot
+                                    break
+                                }
+                            }
+                            if (neighborSlot >= 0) {
+                                neighborCounts[neighborSlot] += 1
+                            } else {
+                                neighborColors[uniqueNeighborCount] = neighborColor
+                                neighborCounts[uniqueNeighborCount] = 1
+                                uniqueNeighborCount += 1
+                            }
+                        }
+                    }
+                    var majorityColorIndex = -1
+                    var majorityCount = 0
+                    for (slot in 0 until uniqueNeighborCount) {
+                        if (neighborCounts[slot] > majorityCount) {
+                            majorityColorIndex = neighborColors[slot]
+                            majorityCount = neighborCounts[slot]
+                        }
+                    }
+                    if (
+                        majorityColorIndex < 0 ||
+                        !areSimilarColors(candidates[colorIndex], candidates[majorityColorIndex], strength, rare = false)
+                    ) {
                         continue
                     }
                     val requiredMajority =
@@ -730,132 +941,168 @@ object PatternEngine {
                         } else {
                             if (pass == 0) 1 else 0
                         }
-                    if (sameCount <= sameLimit && majority.count >= requiredMajority) {
-                        next[index] = majorityCode
+                    if (sameCount <= sameLimit && majorityCount >= requiredMajority) {
+                        next[index] = majorityColorIndex
                     }
                 }
             }
+            current = next
         }
 
-        return next
+        return current
     }
 
     private fun reduceTinyRegions(
-        cells: List<String?>,
+        cells: IntArray,
         width: Int,
         height: Int,
         strength: Int,
         candidates: List<PaletteColor>,
-    ): List<String?> {
+        shouldCancel: () -> Boolean,
+    ): IntArray {
         val level = clampStrength(strength)
         val maxRegionSize = intArrayOf(0, 1, 2, 5, 9)[level]
         if (maxRegionSize <= 0) {
             return cells
         }
 
-        val colorMap = candidates.associateBy { it.id }
-        val next = cells.toMutableList()
+        val next = cells.copyOf()
         val visited = BooleanArray(cells.size)
-        val neighborOffsets = arrayOf(1 to 0, -1 to 0, 0 to 1, 0 to -1)
+        val queue = IntArray(cells.size)
+        val smallRegion = IntArray(maxRegionSize)
+        val borderCounts = IntArray(candidates.size)
+        val touchedBorderColors = IntArray(candidates.size)
 
         for (start in cells.indices) {
-            val colorCode = cells[start] ?: continue
+            if (start % 512 == 0) {
+                checkCancelled(shouldCancel)
+            }
+            val colorIndex = cells[start]
+            if (colorIndex < 0) {
+                continue
+            }
             if (visited[start]) {
                 continue
             }
 
-            val region = ArrayList<Int>()
-            val borderCounts = linkedMapOf<String, Int>()
-            val queue = ArrayDeque<Int>()
-            queue.addLast(start)
+            var queueHead = 0
+            var queueTail = 0
+            var regionSize = 0
+            var touchedBorderCount = 0
+            queue[queueTail++] = start
             visited[start] = true
 
-            while (queue.isNotEmpty()) {
-                val index = queue.removeFirst()
-                region += index
+            while (queueHead < queueTail) {
+                if (queueHead > 0 && queueHead % 4096 == 0) {
+                    checkCancelled(shouldCancel)
+                }
+                val index = queue[queueHead++]
+                if (regionSize < maxRegionSize) {
+                    smallRegion[regionSize] = index
+                }
+                regionSize += 1
                 val x = index % width
                 val y = index / width
 
-                neighborOffsets.forEach { (dx, dy) ->
-                    val nextX = x + dx
-                    val nextY = y + dy
+                for (direction in 0 until 4) {
+                    val nextX = x + if (direction == 0) 1 else if (direction == 1) -1 else 0
+                    val nextY = y + if (direction == 2) 1 else if (direction == 3) -1 else 0
                     if (nextX !in 0 until width || nextY !in 0 until height) {
-                        return@forEach
+                        continue
                     }
                     val neighborIndex = nextY * width + nextX
                     val neighborColor = cells[neighborIndex]
-                    if (neighborColor == colorCode && !visited[neighborIndex]) {
+                    if (neighborColor == colorIndex && !visited[neighborIndex]) {
                         visited[neighborIndex] = true
-                        queue.addLast(neighborIndex)
-                        return@forEach
+                        queue[queueTail++] = neighborIndex
+                        continue
                     }
-                    if (neighborColor != null && neighborColor != colorCode) {
-                        borderCounts[neighborColor] = (borderCounts[neighborColor] ?: 0) + 1
+                    if (neighborColor >= 0 && neighborColor != colorIndex) {
+                        if (borderCounts[neighborColor] == 0) {
+                            touchedBorderColors[touchedBorderCount++] = neighborColor
+                        }
+                        borderCounts[neighborColor] += 1
                     }
                 }
             }
 
-            if (region.size > maxRegionSize || borderCounts.isEmpty()) {
-                continue
+            var replacement = -1
+            var replacementBorderCount = 0
+            if (regionSize <= maxRegionSize) {
+                for (touchedIndex in 0 until touchedBorderCount) {
+                    val borderColor = touchedBorderColors[touchedIndex]
+                    val count = borderCounts[borderColor]
+                    if (
+                        count > replacementBorderCount &&
+                        areSimilarColors(candidates[colorIndex], candidates[borderColor], strength, rare = true)
+                    ) {
+                        replacement = borderColor
+                        replacementBorderCount = count
+                    }
+                }
             }
-
-            val replacement =
-                borderCounts.entries
-                    .sortedByDescending { it.value }
-                    .firstOrNull {
-                        areSimilarColors(colorMap[colorCode], colorMap[it.key], strength, rare = true)
-                    }?.key
-                    ?: continue
-
-            region.forEach { next[it] = replacement }
+            for (touchedIndex in 0 until touchedBorderCount) {
+                borderCounts[touchedBorderColors[touchedIndex]] = 0
+            }
+            if (replacement >= 0) {
+                for (regionIndex in 0 until regionSize) {
+                    next[smallRegion[regionIndex]] = replacement
+                }
+            }
         }
 
         return next
     }
 
     private fun mergeSimilarColors(
-        cells: List<String?>,
+        cells: IntArray,
         strength: Int,
         candidates: List<PaletteColor>,
-    ): List<String?> {
+    ): IntArray {
         val level = clampStrength(strength)
         if (level == 0) {
             return cells
         }
 
-        val colorMap = candidates.associateBy { it.id }
-        val counts = linkedMapOf<String, Int>()
-        cells.forEach { colorCode ->
-            if (colorCode != null) {
-                counts[colorCode] = (counts[colorCode] ?: 0) + 1
+        val counts = IntArray(candidates.size)
+        val firstSeen = IntArray(candidates.size) { Int.MAX_VALUE }
+        cells.forEachIndexed { index, colorIndex ->
+            if (colorIndex >= 0) {
+                if (counts[colorIndex] == 0) {
+                    firstSeen[colorIndex] = index
+                }
+                counts[colorIndex] += 1
             }
         }
 
         val rows =
-            counts.entries
-                .mapNotNull { (code, count) ->
-                    colorMap[code]?.let { RankedPaletteColor(color = it, count = count, score = count.toDouble()) }
-                }
-                .sortedByDescending { it.count }
+            candidates.indices
+                .filter { counts[it] > 0 }
+                .sortedWith(compareByDescending<Int> { counts[it] }.thenBy { firstSeen[it] })
 
-        val total = rows.sumOf { it.count }.coerceAtLeast(1)
-        val replacements = linkedMapOf<String, String>()
+        val total = rows.sumOf { counts[it] }.coerceAtLeast(1)
+        val replacements = IntArray(candidates.size) { it }
+        var hasReplacements = false
 
-        rows.forEachIndexed { index, row ->
-            val rare = row.count <= max(3.0, total * (0.006 + level * 0.003)).roundToInt()
+        rows.forEachIndexed { index, colorIndex ->
+            val rare = counts[colorIndex] <= max(3.0, total * (0.006 + level * 0.003)).roundToInt()
             val target =
-                rows.take(index).firstOrNull { candidate ->
-                    areSimilarColors(row.color, candidate.color, level, rare)
+                rows.take(index).firstOrNull { candidateIndex ->
+                    areSimilarColors(candidates[colorIndex], candidates[candidateIndex], level, rare)
                 }
             if (target != null) {
-                replacements[row.color.id] = replacements[target.color.id] ?: target.color.id
+                replacements[colorIndex] = replacements[target]
+                hasReplacements = true
             }
         }
 
-        if (replacements.isEmpty()) {
+        if (!hasReplacements) {
             return cells
         }
-        return cells.map { colorCode -> if (colorCode == null) null else replacements[colorCode] ?: colorCode }
+        return IntArray(cells.size) { index ->
+            val colorIndex = cells[index]
+            if (colorIndex < 0) -1 else replacements[colorIndex]
+        }
     }
 
     private fun isFeatureColor(
@@ -943,12 +1190,10 @@ object PatternEngine {
             return false
         }
 
-        val fromRgb = intArrayOf(from.red, from.green, from.blue)
-        val toRgb = intArrayOf(to.red, to.green, to.blue)
-        val fromChroma = colorChroma(fromRgb)
-        val toChroma = colorChroma(toRgb)
-        val fromLuminance = luminance(fromRgb)
-        val toLuminance = luminance(toRgb)
+        val fromChroma = colorChroma(from.red, from.green, from.blue).toDouble()
+        val toChroma = colorChroma(to.red, to.green, to.blue).toDouble()
+        val fromLuminance = luminance(from.red, from.green, from.blue)
+        val toLuminance = luminance(to.red, to.green, to.blue)
         val distance = colorDistance(from, to)
         val saturationMismatch = kotlin.math.abs(fromChroma - toChroma)
         val luminanceMismatch = kotlin.math.abs(fromLuminance - toLuminance)
@@ -972,44 +1217,11 @@ object PatternEngine {
         return distance <= threshold
     }
 
-    private fun neighborColorIds(
-        cells: List<String?>,
-        width: Int,
-        height: Int,
-        x: Int,
-        y: Int,
-    ): List<String?> {
-        val result = ArrayList<String?>(8)
-        for (deltaY in -1..1) {
-            for (deltaX in -1..1) {
-                if (deltaX == 0 && deltaY == 0) {
-                    continue
-                }
-                val nextX = x + deltaX
-                val nextY = y + deltaY
-                if (nextX !in 0 until width || nextY !in 0 until height) {
-                    continue
-                }
-                result += cells[nextY * width + nextX]
-            }
-        }
-        return result
-    }
-
-    private fun majorityColor(colors: List<String?>): MajorityColor {
-        val counts = linkedMapOf<String, Int>()
-        colors.forEach { colorCode ->
-            if (colorCode != null) {
-                counts[colorCode] = (counts[colorCode] ?: 0) + 1
-            }
-        }
-        val best = counts.entries.sortedByDescending { it.value }.firstOrNull()
-        return MajorityColor(best?.key, best?.value ?: 0)
-    }
-
     private fun isBackgroundSample(
         alpha: Int,
-        rgb: IntArray,
+        red: Int,
+        green: Int,
+        blue: Int,
         settings: GenerationSettings,
         detectedBackgroundColor: IntArray,
     ): Boolean {
@@ -1019,40 +1231,60 @@ object PatternEngine {
         if (settings.backgroundMode == BackgroundMode.Keep) {
             return false
         }
-        val deltaRed = (rgb[0] - detectedBackgroundColor[0]).toDouble()
-        val deltaGreen = (rgb[1] - detectedBackgroundColor[1]).toDouble()
-        val deltaBlue = (rgb[2] - detectedBackgroundColor[2]).toDouble()
+        val deltaRed = (red - detectedBackgroundColor[0]).toDouble()
+        val deltaGreen = (green - detectedBackgroundColor[1]).toDouble()
+        val deltaBlue = (blue - detectedBackgroundColor[2]).toDouble()
         val distance = sqrt(deltaRed * deltaRed + deltaGreen * deltaGreen + deltaBlue * deltaBlue)
         return distance <= settings.tolerance
     }
 
     private fun luminance(rgb: IntArray): Double {
-        return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+        return luminance(rgb[0], rgb[1], rgb[2])
     }
 
     private fun colorChroma(rgb: IntArray): Double {
-        return (max(rgb[0], max(rgb[1], rgb[2])) - min(rgb[0], min(rgb[1], rgb[2]))).toDouble()
+        return colorChroma(rgb[0], rgb[1], rgb[2]).toDouble()
     }
 
-    private fun simplifySourceRgb(rgb: IntArray, strength: Int): IntArray {
+    private fun luminance(red: Int, green: Int, blue: Int): Double {
+        return 0.299 * red + 0.587 * green + 0.114 * blue
+    }
+
+    private fun colorChroma(red: Int, green: Int, blue: Int): Int {
+        return max(red, max(green, blue)) - min(red, min(green, blue))
+    }
+
+    private fun simplifySourceRgb(red: Int, green: Int, blue: Int, strength: Int): Int {
         val level = clampStrength(strength)
         if (level == 0) {
-            return rgb
+            return packRgb(red, green, blue)
         }
         val channelStep = intArrayOf(1, 5, 9, 14, 20)[level]
         val neutralThreshold = intArrayOf(0, 8, 14, 20, 28)[level]
-        val chroma = colorChroma(rgb)
+        val chroma = colorChroma(red, green, blue)
         return if (chroma <= neutralThreshold) {
-            val value = quantizeChannel(luminance(rgb).roundToInt(), channelStep)
-            intArrayOf(value, value, value)
+            val value = quantizeChannel(luminance(red, green, blue).roundToInt(), channelStep)
+            packRgb(value, value, value)
         } else {
-            intArrayOf(
-                quantizeChannel(rgb[0], channelStep),
-                quantizeChannel(rgb[1], channelStep),
-                quantizeChannel(rgb[2], channelStep),
+            packRgb(
+                quantizeChannel(red, channelStep),
+                quantizeChannel(green, channelStep),
+                quantizeChannel(blue, channelStep),
             )
         }
     }
+
+    private fun packRgb(red: Int, green: Int, blue: Int): Int {
+        return (red.coerceIn(0, 255) shl 16) or
+            (green.coerceIn(0, 255) shl 8) or
+            blue.coerceIn(0, 255)
+    }
+
+    private fun redOf(rgb: Int): Int = rgb ushr 16 and 0xFF
+
+    private fun greenOf(rgb: Int): Int = rgb ushr 8 and 0xFF
+
+    private fun blueOf(rgb: Int): Int = rgb and 0xFF
 
     private fun quantizeChannel(value: Int, step: Int): Int {
         return max(0, min(255, (value / step.toDouble()).roundToInt() * step))
@@ -1062,23 +1294,30 @@ object PatternEngine {
         return max(0, min(4, value))
     }
 
+    private fun checkCancelled(shouldCancel: () -> Boolean) {
+        if (shouldCancel()) {
+            throw CancellationException("Pattern generation cancelled")
+        }
+    }
+
     private fun estimateBackgroundColor(
-        pixels: IntArray,
-        width: Int,
-        height: Int,
+        source: Bitmap,
+        cropRect: Rect,
     ): IntArray {
+        val width = cropRect.width().coerceAtLeast(1)
+        val height = cropRect.height().coerceAtLeast(1)
         val samples = ArrayList<IntArray>()
         val maxSamplesPerEdge = 80
         val xStep = max(1, width / maxSamplesPerEdge)
         val yStep = max(1, height / maxSamplesPerEdge)
 
         for (x in 0 until width step xStep) {
-            pushOpaqueSample(samples, pixels, width, x, 0)
-            pushOpaqueSample(samples, pixels, width, x, height - 1)
+            pushOpaqueSample(samples, source, cropRect.left + x, cropRect.top)
+            pushOpaqueSample(samples, source, cropRect.left + x, cropRect.bottom - 1)
         }
         for (y in 0 until height step yStep) {
-            pushOpaqueSample(samples, pixels, width, 0, y)
-            pushOpaqueSample(samples, pixels, width, width - 1, y)
+            pushOpaqueSample(samples, source, cropRect.left, cropRect.top + y)
+            pushOpaqueSample(samples, source, cropRect.right - 1, cropRect.top + y)
         }
 
         if (samples.isEmpty()) {
@@ -1110,12 +1349,11 @@ object PatternEngine {
 
     private fun pushOpaqueSample(
         samples: MutableList<IntArray>,
-        pixels: IntArray,
-        width: Int,
+        source: Bitmap,
         x: Int,
         y: Int,
     ) {
-        val pixel = pixels[y * width + x]
+        val pixel = source.getPixel(x, y)
         if (pixel ushr 24 and 0xFF < 24) {
             return
         }
@@ -1438,7 +1676,7 @@ object PatternEngine {
             return ChartCellSample(rgb = null, isTransparent = true)
         }
         if (lum > 238.0 && chroma < 24.0 && hasDarkText) {
-            return ChartCellSample(rgb = intArrayOf(255, 255, 251), isTransparent = false, forcedColorCode = "H2")
+            return ChartCellSample(rgb = intArrayOf(255, 255, 251), isTransparent = false)
         }
         return ChartCellSample(rgb = rgb, isTransparent = false)
     }

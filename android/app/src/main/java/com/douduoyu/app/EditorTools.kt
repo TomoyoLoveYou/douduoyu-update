@@ -10,6 +10,195 @@ object EditorTools {
         val cells: List<String?>,
     )
 
+    data class RemovableOuterEmptyLines(
+        val up: Int,
+        val down: Int,
+        val left: Int,
+        val right: Int,
+    ) {
+        val total: Int
+            get() = up + down + left + right
+
+        operator fun get(direction: CanvasExpandDirection): Int =
+            when (direction) {
+                CanvasExpandDirection.Up -> up
+                CanvasExpandDirection.Down -> down
+                CanvasExpandDirection.Left -> left
+                CanvasExpandDirection.Right -> right
+            }
+    }
+
+    data class GridBounds(
+        val startColumn: Int,
+        val endColumn: Int,
+        val startRow: Int,
+        val endRow: Int,
+    ) {
+        val width: Int
+            get() = endColumn - startColumn + 1
+        val height: Int
+            get() = endRow - startRow + 1
+    }
+
+    fun occupiedBounds(
+        cells: List<String?>,
+        width: Int,
+        height: Int,
+    ): GridBounds? {
+        if (!isValidGrid(cells = cells, width = width, height = height)) {
+            return null
+        }
+
+        var minColumn = width
+        var maxColumn = -1
+        var minRow = height
+        var maxRow = -1
+        for (row in 0 until height) {
+            for (column in 0 until width) {
+                if (cells.getOrNull(row * width + column) == null) {
+                    continue
+                }
+                minColumn = min(minColumn, column)
+                maxColumn = max(maxColumn, column)
+                minRow = min(minRow, row)
+                maxRow = max(maxRow, row)
+            }
+        }
+
+        if (maxColumn < 0 || maxRow < 0) {
+            return null
+        }
+        return GridBounds(
+            startColumn = minColumn,
+            endColumn = maxColumn,
+            startRow = minRow,
+            endRow = maxRow,
+        )
+    }
+
+    fun removableOuterEmptyLines(
+        cells: List<String?>,
+        width: Int,
+        height: Int,
+    ): RemovableOuterEmptyLines {
+        if (!isValidGrid(cells = cells, width = width, height = height)) {
+            return RemovableOuterEmptyLines(up = 0, down = 0, left = 0, right = 0)
+        }
+
+        val bounds = occupiedBounds(cells = cells, width = width, height = height)
+        if (bounds == null) {
+            return RemovableOuterEmptyLines(
+                up = height - 1,
+                down = height - 1,
+                left = width - 1,
+                right = width - 1,
+            )
+        }
+
+        return RemovableOuterEmptyLines(
+            up = bounds.startRow,
+            down = height - 1 - bounds.endRow,
+            left = bounds.startColumn,
+            right = width - 1 - bounds.endColumn,
+        )
+    }
+
+    fun removeOuterEmptyLine(
+        cells: List<String?>,
+        width: Int,
+        height: Int,
+        direction: CanvasExpandDirection,
+    ): GridTransform {
+        if (!isValidGrid(cells = cells, width = width, height = height)) {
+            return GridTransform(width = width, height = height, cells = cells)
+        }
+
+        val canRemove = removableOuterEmptyLines(cells = cells, width = width, height = height)[direction] > 0
+        if (!canRemove) {
+            return GridTransform(width = width, height = height, cells = cells)
+        }
+
+        return when (direction) {
+            CanvasExpandDirection.Up ->
+                GridTransform(
+                    width = width,
+                    height = height - 1,
+                    cells = cells.drop(width),
+                )
+
+            CanvasExpandDirection.Down ->
+                GridTransform(
+                    width = width,
+                    height = height - 1,
+                    cells = cells.dropLast(width),
+                )
+
+            CanvasExpandDirection.Left,
+            CanvasExpandDirection.Right,
+            -> {
+                val removedColumn = if (direction == CanvasExpandDirection.Left) 0 else width - 1
+                val nextCells =
+                    buildList<String?>((width - 1) * height) {
+                        for (row in 0 until height) {
+                            for (column in 0 until width) {
+                                if (column != removedColumn) {
+                                    add(cells[row * width + column])
+                                }
+                            }
+                        }
+                    }
+                GridTransform(
+                    width = width - 1,
+                    height = height,
+                    cells = nextCells,
+                )
+            }
+        }
+    }
+
+    fun removeAllOuterEmptyLines(
+        cells: List<String?>,
+        width: Int,
+        height: Int,
+    ): GridTransform {
+        if (!isValidGrid(cells = cells, width = width, height = height)) {
+            return GridTransform(width = width, height = height, cells = cells)
+        }
+        if (cells.none { it != null }) {
+            return GridTransform(width = 1, height = 1, cells = listOf(null))
+        }
+        return trimOuterEmptyCells(cells = cells, width = width, height = height)
+    }
+
+    fun trimOuterEmptyCells(
+        cells: List<String?>,
+        width: Int,
+        height: Int,
+    ): GridTransform {
+        if (!isValidGrid(cells = cells, width = width, height = height)) {
+            return GridTransform(width = width, height = height, cells = cells)
+        }
+        val bounds = occupiedBounds(cells = cells, width = width, height = height)
+            ?: return GridTransform(width = width, height = height, cells = cells)
+        if (bounds.width == width && bounds.height == height) {
+            return GridTransform(width = width, height = height, cells = cells)
+        }
+
+        val trimmedCells =
+            buildList<String?>(bounds.width * bounds.height) {
+                for (row in bounds.startRow..bounds.endRow) {
+                    for (column in bounds.startColumn..bounds.endColumn) {
+                        add(cells.getOrNull(row * width + column))
+                    }
+                }
+            }
+        return GridTransform(
+            width = bounds.width,
+            height = bounds.height,
+            cells = trimmedCells,
+        )
+    }
+
     fun floodFill(
         cells: List<String?>,
         width: Int,
@@ -51,24 +240,36 @@ object EditorTools {
         height: Int,
         startIndex: Int,
     ): List<Int> {
-        if (startIndex !in cells.indices) {
+        if (startIndex !in cells.indices || width <= 0 || height <= 0) {
             return emptyList()
         }
         val target = cells[startIndex]
-        val seen = linkedSetOf<Int>()
-        val queue = ArrayDeque<Int>()
-        queue.addLast(startIndex)
+        val seen = BooleanArray(cells.size)
+        val queue = IntArray(cells.size)
+        val result = ArrayList<Int>()
+        var queueStart = 0
+        var queueEnd = 0
 
-        while (queue.isNotEmpty()) {
-            val index = queue.removeFirst()
-            if (!seen.add(index) || cells[index] != target) {
-                continue
+        fun enqueue(index: Int) {
+            if (index in cells.indices && !seen[index] && cells[index] == target) {
+                seen[index] = true
+                queue[queueEnd++] = index
             }
-            orthogonalNeighbors(index, width, height)
-                .filterTo(queue) { neighbor -> !seen.contains(neighbor) && cells[neighbor] == target }
         }
 
-        return seen.toList()
+        enqueue(startIndex)
+        while (queueStart < queueEnd) {
+            val index = queue[queueStart++]
+            result += index
+            val x = index % width
+            val y = index / width
+            if (x > 0) enqueue(index - 1)
+            if (x + 1 < width) enqueue(index + 1)
+            if (y > 0) enqueue(index - width)
+            if (y + 1 < height) enqueue(index + width)
+        }
+
+        return result
     }
 
     fun collectSameColorIndices(
@@ -297,6 +498,15 @@ object EditorTools {
 
         return GridTransform(width = nextWidth, height = nextHeight, cells = next)
     }
+
+    private fun isValidGrid(
+        cells: List<String?>,
+        width: Int,
+        height: Int,
+    ): Boolean =
+        width > 0 &&
+            height > 0 &&
+            width.toLong() * height.toLong() == cells.size.toLong()
 
     private fun orthogonalNeighbors(
         index: Int,

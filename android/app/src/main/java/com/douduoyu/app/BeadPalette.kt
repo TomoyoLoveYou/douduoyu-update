@@ -1,5 +1,7 @@
 package com.douduoyu.app
 
+import java.util.Collections
+
 data class PaletteColor(
     val id: String,
     val code: String,
@@ -12,6 +14,23 @@ data class PaletteColor(
 }
 
 object BeadPalette {
+    private data class RegisteredCustomColorScheme(
+        val scheme: CustomColorScheme,
+        val selectedColors: List<PaletteColor>,
+    )
+
+    private data class CustomColorRegistry(
+        val schemesById: Map<String, RegisteredCustomColorScheme>,
+        val colorsById: Map<String, PaletteColor>,
+    ) {
+        companion object {
+            val Empty = CustomColorRegistry(emptyMap(), emptyMap())
+        }
+    }
+
+    @Volatile
+    private var customColorRegistry = CustomColorRegistry.Empty
+
     private val basicPaletteCsv =
         """
         A1,#FAF4C8
@@ -440,6 +459,54 @@ object BeadPalette {
             ?: palette(scheme.paletteMode)
     }
 
+    fun palette(
+        baseScheme: ColorSchemePreset,
+        customId: String?,
+    ): List<PaletteColor> {
+        val registered = customId?.let(customColorRegistry.schemesById::get)
+        return registered
+            ?.selectedColors
+            ?.takeIf { it.isNotEmpty() }
+            ?: palette(baseScheme)
+    }
+
+    fun registerCustomColorSchemes(schemes: List<CustomColorScheme>) {
+        val normalizedById = linkedMapOf<String, CustomColorScheme>()
+        schemes.forEach { rawScheme ->
+            rawScheme.normalizedOrNull()?.let { scheme ->
+                normalizedById[scheme.id] = immutableSchemeSnapshot(scheme)
+            }
+        }
+
+        val registeredById = linkedMapOf<String, RegisteredCustomColorScheme>()
+        val customColorsById = linkedMapOf<String, PaletteColor>()
+        normalizedById.values.forEach { scheme ->
+            val allColors = immutableListSnapshot(scheme.palette(includeDisabled = true))
+            allColors.forEach { color -> customColorsById[color.id] = color }
+            val selectedCodes = scheme.selectedCodes.toHashSet()
+            registeredById[scheme.id] =
+                RegisteredCustomColorScheme(
+                    scheme = scheme,
+                    selectedColors = immutableListSnapshot(allColors.filter { it.code in selectedCodes }),
+                )
+        }
+
+        customColorRegistry =
+            CustomColorRegistry(
+                schemesById = Collections.unmodifiableMap(registeredById),
+                colorsById = Collections.unmodifiableMap(customColorsById),
+            )
+    }
+
+    fun customColorScheme(id: String?): CustomColorScheme? {
+        return id?.let(customColorRegistry.schemesById::get)?.scheme
+    }
+
+    fun schemeLabel(
+        base: ColorSchemePreset,
+        customId: String?,
+    ): String = customColorScheme(customId)?.name ?: base.label
+
     fun normalizeStoredCode(
         code: String?,
         scheme: ColorSchemePreset,
@@ -449,11 +516,16 @@ object BeadPalette {
         }
         BrandPaletteData.legacyBrandCodeAliasesByScheme[scheme]?.get(code)?.let { return it }
         BrandPaletteData.displayCodeAliasesByScheme[scheme]?.get(code)?.let { return it }
-        return code.takeIf { it in colorMap }
+        return code.takeIf { find(it) != null }
             ?: code
     }
 
-    fun find(code: String?): PaletteColor? = code?.let(colorMap::get)
+    fun find(code: String?): PaletteColor? {
+        if (code == null) {
+            return null
+        }
+        return customColorRegistry.colorsById[code] ?: colorMap[code]
+    }
 
     fun displayCode(code: String?): String = find(code)?.code ?: code.orEmpty()
 
@@ -464,23 +536,34 @@ object BeadPalette {
         candidates: List<PaletteColor> = colors,
     ): PaletteColor {
         val palette = candidates.ifEmpty { colors }
-        var best = palette.first()
+        return palette[nearestIndex(red, green, blue, palette)]
+    }
+
+    internal fun nearestIndex(
+        red: Int,
+        green: Int,
+        blue: Int,
+        candidates: List<PaletteColor> = colors,
+    ): Int {
+        val palette = candidates.ifEmpty { colors }
+        var bestIndex = 0
         var bestDistance = Double.POSITIVE_INFINITY
 
-        for (color in palette) {
-            val distance = colorDistance(intArrayOf(red, green, blue), intArrayOf(color.red, color.green, color.blue))
+        for (index in palette.indices) {
+            val color = palette[index]
+            val distance = colorDistanceSquared(red, green, blue, color)
             if (distance < bestDistance) {
                 bestDistance = distance
-                best = color
+                bestIndex = index
             }
         }
 
-        return best
+        return bestIndex
     }
 
     fun distanceBetween(left: String, right: String): Double {
-        val leftColor = colorMap[left] ?: return Double.POSITIVE_INFINITY
-        val rightColor = colorMap[right] ?: return Double.POSITIVE_INFINITY
+        val leftColor = find(left) ?: return Double.POSITIVE_INFINITY
+        val rightColor = find(right) ?: return Double.POSITIVE_INFINITY
         return colorDistance(
             intArrayOf(leftColor.red, leftColor.green, leftColor.blue),
             intArrayOf(rightColor.red, rightColor.green, rightColor.blue),
@@ -504,9 +587,25 @@ object BeadPalette {
             .toList()
     }
 
+    private fun immutableSchemeSnapshot(scheme: CustomColorScheme): CustomColorScheme {
+        return scheme.copy(
+            selectedCodes = immutableListSnapshot(scheme.selectedCodes),
+            colorOverrides = Collections.unmodifiableMap(LinkedHashMap(scheme.colorOverrides)),
+        )
+    }
+
+    private fun <T> immutableListSnapshot(values: Collection<T>): List<T> {
+        return Collections.unmodifiableList(ArrayList(values))
+    }
+
     internal fun hexToArgb(hex: String): Int {
         val clean = hex.removePrefix("#")
-        return (0xFF000000 or clean.toLong(16)).toInt()
+        val value = clean.toLong(16)
+        return when (clean.length) {
+            6 -> (0xFF000000 or value).toInt()
+            8 -> (((value and 0xFF) shl 24) or (value ushr 8)).toInt()
+            else -> throw IllegalArgumentException("Expected #RRGGBB or #RRGGBBAA: $hex")
+        }
     }
 
     private fun colorDistance(left: IntArray, right: IntArray): Double {
@@ -519,5 +618,20 @@ object BeadPalette {
                 4 * deltaGreen * deltaGreen +
                 (2 + (255 - redMean) / 256.0) * deltaBlue * deltaBlue,
         )
+    }
+
+    private fun colorDistanceSquared(
+        red: Int,
+        green: Int,
+        blue: Int,
+        color: PaletteColor,
+    ): Double {
+        val redMean = (red + color.red) / 2.0
+        val deltaRed = (red - color.red).toDouble()
+        val deltaGreen = (green - color.green).toDouble()
+        val deltaBlue = (blue - color.blue).toDouble()
+        return (2 + redMean / 256.0) * deltaRed * deltaRed +
+            4 * deltaGreen * deltaGreen +
+            (2 + (255 - redMean) / 256.0) * deltaBlue * deltaBlue
     }
 }

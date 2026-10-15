@@ -2,8 +2,31 @@ package com.douduoyu.app
 
 data class ColorConfidenceBrandMatrix(
     val brand: ColorSchemeBrand,
-    val schemeScores: Map<String, Double>,
+    val scores: ColorConfidenceScore,
+    val schemeScores: Map<String, ColorConfidenceScore>,
 )
+
+enum class ColorConfidenceDimension(
+    val label: String,
+) {
+    Overall("\u603b\u4f53"),
+    ColorData("\u989c\u8272\u51c6\u786e\u5ea6"),
+    SchemeIntegrity("\u65b9\u6848\u5b8c\u6574\u6027"),
+}
+
+data class ColorConfidenceScore(
+    val overall: Double,
+    val colorData: Double,
+    val schemeIntegrity: Double,
+) {
+    fun valueFor(dimension: ColorConfidenceDimension): Double {
+        return when (dimension) {
+            ColorConfidenceDimension.Overall -> overall
+            ColorConfidenceDimension.ColorData -> colorData
+            ColorConfidenceDimension.SchemeIntegrity -> schemeIntegrity
+        }
+    }
+}
 
 data class ColorConfidenceVariantRow(
     val key: String,
@@ -21,138 +44,163 @@ object ColorConfidenceData {
     const val highConfidenceMin = 0.85
     const val mediumConfidenceMin = 0.70
 
-    private val scoresByBrandId: Map<String, Map<String, Double>> =
+    // BEGIN GENERATED PALETTE CONFIDENCE
+    const val referenceGeneratedAt = "2026-07-13T04:03:13.639Z"
+    const val referenceSha256 = "8137bdd733bb3db30dad8a7ea46d41e749b6df6857cd5e42bf2a0f026d916c30"
+    const val referenceBrandCount = 12
+    const val referenceSchemeCount = 88
+    const val referenceColorEntryCount = 14781
+
+    private val brandScoresByBrandId: Map<String, ColorConfidenceScore> =
+        mapOf(
+            "huangdoudou" to ColorConfidenceScore(overall = 0.8313, colorData = 0.929, schemeIntegrity = 0.98),
+            "kaka" to ColorConfidenceScore(overall = 0.7137, colorData = 0.7137, schemeIntegrity = 0.98),
+            "manman" to ColorConfidenceScore(overall = 0.9387, colorData = 0.9625, schemeIntegrity = 0.96),
+            "mixiaowo" to ColorConfidenceScore(overall = 0.9478, colorData = 0.954, schemeIntegrity = 0.9455),
+            "panpan" to ColorConfidenceScore(overall = 0.9617, colorData = 0.9635, schemeIntegrity = 0.98),
+            "shishi" to ColorConfidenceScore(overall = 0.7778, colorData = 0.818, schemeIntegrity = 0.9206),
+            "tongqu" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+            "xiaowu" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+            "artkal" to ColorConfidenceScore(overall = 0.8143, colorData = 0.8143, schemeIntegrity = 0.98),
+            "coco" to ColorConfidenceScore(overall = 0.8833, colorData = 0.9321, schemeIntegrity = 0.9419),
+            "dodo" to ColorConfidenceScore(overall = 0.8491, colorData = 0.8889, schemeIntegrity = 0.9285),
+            "mard" to ColorConfidenceScore(overall = 0.9704, colorData = 0.98, schemeIntegrity = 0.98),
+        )
+
+    private val scoresByBrandId: Map<String, Map<String, ColorConfidenceScore>> =
         mapOf(
             "huangdoudou" to
                 mapOf(
-                    "24" to 0.72,
-                    "48" to 0.72,
-                    "72" to 0.72,
-                    "96" to 0.72,
-                    "120" to 0.72,
-                    "144" to 0.72,
-                    "168" to 0.72,
-                    "291" to 0.901,
+                    "24" to ColorConfidenceScore(overall = 0.8162, colorData = 0.9562, schemeIntegrity = 0.98),
+                    "48" to ColorConfidenceScore(overall = 0.794, colorData = 0.934, schemeIntegrity = 0.98),
+                    "72" to ColorConfidenceScore(overall = 0.8162, colorData = 0.9562, schemeIntegrity = 0.98),
+                    "96" to ColorConfidenceScore(overall = 0.794, colorData = 0.934, schemeIntegrity = 0.98),
+                    "120" to ColorConfidenceScore(overall = 0.8162, colorData = 0.9562, schemeIntegrity = 0.98),
+                    "144" to ColorConfidenceScore(overall = 0.794, colorData = 0.934, schemeIntegrity = 0.98),
+                    "168" to ColorConfidenceScore(overall = 0.794, colorData = 0.934, schemeIntegrity = 0.98),
+                    "291" to ColorConfidenceScore(overall = 0.901, colorData = 0.901, schemeIntegrity = 0.98),
                 ),
             "kaka" to
                 mapOf(
-                    "284" to 0.6795,
-                    "286" to 0.72,
+                    "284" to ColorConfidenceScore(overall = 0.7074, colorData = 0.7074, schemeIntegrity = 0.98),
+                    "286" to ColorConfidenceScore(overall = 0.72, colorData = 0.72, schemeIntegrity = 0.98),
                 ),
             "manman" to
                 mapOf(
-                    "24" to 0.96,
-                    "48" to 0.96,
-                    "72" to 0.96,
-                    "96" to 0.96,
-                    "120" to 0.96,
-                    "144" to 0.96,
-                    "168" to 0.96,
-                    "192" to 0.9,
-                    "216" to 0.8254,
-                    "278" to 0.98,
-                    "290" to 0.96,
+                    "24" to ColorConfidenceScore(overall = 0.96, colorData = 0.96, schemeIntegrity = 0.98),
+                    "48" to ColorConfidenceScore(overall = 0.96, colorData = 0.96, schemeIntegrity = 0.98),
+                    "72" to ColorConfidenceScore(overall = 0.96, colorData = 0.96, schemeIntegrity = 0.98),
+                    "96" to ColorConfidenceScore(overall = 0.96, colorData = 0.96, schemeIntegrity = 0.98),
+                    "120" to ColorConfidenceScore(overall = 0.96, colorData = 0.96, schemeIntegrity = 0.98),
+                    "144" to ColorConfidenceScore(overall = 0.96, colorData = 0.96, schemeIntegrity = 0.98),
+                    "168" to ColorConfidenceScore(overall = 0.96, colorData = 0.96, schemeIntegrity = 0.98),
+                    "192" to ColorConfidenceScore(overall = 0.9, colorData = 0.9, schemeIntegrity = 0.98),
+                    "216" to ColorConfidenceScore(overall = 0.8254, colorData = 0.98, schemeIntegrity = 0.98),
+                    "278" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "290" to ColorConfidenceScore(overall = 0.96, colorData = 0.98, schemeIntegrity = 0.8662),
                 ),
             "mixiaowo" to
                 mapOf(
-                    "24" to 0.98,
-                    "48" to 0.98,
-                    "72" to 0.98,
-                    "96" to 0.98,
-                    "120" to 0.98,
-                    "144" to 0.98,
-                    "168" to 0.98,
-                    "192" to 0.98,
-                    "230" to 0.6016,
-                    "290" to 0.9463,
-                    "291" to 0.98,
-                    "292" to 0.6016,
+                    "24" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "48" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "72" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "96" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "120" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "144" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "168" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "192" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "230" to ColorConfidenceScore(overall = 0.8778, colorData = 0.8816, schemeIntegrity = 0.8626),
+                    "290" to ColorConfidenceScore(overall = 0.9493, colorData = 0.98, schemeIntegrity = 0.98),
+                    "291" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "292" to ColorConfidenceScore(overall = 0.8731, colorData = 0.8816, schemeIntegrity = 0.8389),
                 ),
             "panpan" to
                 mapOf(
-                    "24" to 0.98,
-                    "48" to 0.98,
-                    "72" to 0.98,
-                    "96" to 0.98,
-                    "120" to 0.98,
-                    "144" to 0.98,
-                    "168" to 0.98,
-                    "192" to 0.98,
-                    "289" to 0.9463,
-                    "290" to 0.6816,
-                    "291" to 0.98,
+                    "24" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "48" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "72" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "96" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "120" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "144" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "168" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "192" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "289" to ColorConfidenceScore(overall = 0.9493, colorData = 0.98, schemeIntegrity = 0.98),
+                    "290" to ColorConfidenceScore(overall = 0.9013, colorData = 0.8816, schemeIntegrity = 0.98),
+                    "291" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
                 ),
             "shishi" to
                 mapOf(
-                    "217" to 0.8192,
-                    "220" to 0.6568,
+                    "217" to ColorConfidenceScore(overall = 0.8192, colorData = 0.8192, schemeIntegrity = 0.98),
+                    "220" to ColorConfidenceScore(overall = 0.7368, colorData = 0.8168, schemeIntegrity = 0.8618),
                 ),
             "tongqu" to
                 mapOf(
-                    "120" to 0.98,
+                    "120" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
                 ),
             "xiaowu" to
                 mapOf(
-                    "290" to 0.97,
-                    "291" to 0.98,
+                    "290" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "291" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
                 ),
             "artkal" to
                 mapOf(
-                    "174" to 0.655,
-                    "197" to 0.98,
-                    "221" to 0.8467,
-                    "418" to 0.78,
-                    "418-New" to 0.72,
+                    "174" to ColorConfidenceScore(overall = 0.63, colorData = 0.63, schemeIntegrity = 0.98),
+                    "197" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "221" to ColorConfidenceScore(overall = 0.8604, colorData = 0.8604, schemeIntegrity = 0.98),
+                    "418" to ColorConfidenceScore(overall = 0.883, colorData = 0.883, schemeIntegrity = 0.98),
+                    "418-New" to ColorConfidenceScore(overall = 0.72, colorData = 0.72, schemeIntegrity = 0.98),
                 ),
             "coco" to
                 mapOf(
-                    "24" to 0.98,
-                    "48" to 0.98,
-                    "72" to 0.98,
-                    "96" to 0.98,
-                    "120" to 0.98,
-                    "144" to 0.98,
-                    "168" to 0.98,
-                    "192" to 0.98,
-                    "221" to 0.8392,
-                    "291" to 0.98,
-                    "293" to 0.46,
+                    "24" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "48" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "72" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "96" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "120" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "144" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "168" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "192" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "221" to ColorConfidenceScore(overall = 0.9222, colorData = 0.98, schemeIntegrity = 0.98),
+                    "291" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "293" to ColorConfidenceScore(overall = 0.46, colorData = 0.7, schemeIntegrity = 0.7571),
                 ),
             "dodo" to
                 mapOf(
-                    "24" to 0.98,
-                    "48" to 0.98,
-                    "72" to 0.98,
-                    "96" to 0.98,
-                    "120" to 0.98,
-                    "144" to 0.98,
-                    "168" to 0.94,
-                    "192" to 0.94,
-                    "216" to 0.64,
-                    "288" to 0.64,
-                    "290" to 0.72,
-                    "291" to 0.901,
+                    "24" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "48" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "72" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "96" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "120" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "144" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "168" to ColorConfidenceScore(overall = 0.94, colorData = 0.94, schemeIntegrity = 0.98),
+                    "192" to ColorConfidenceScore(overall = 0.94, colorData = 0.94, schemeIntegrity = 0.98),
+                    "216" to ColorConfidenceScore(overall = 0.64, colorData = 0.72, schemeIntegrity = 0.8059),
+                    "288" to ColorConfidenceScore(overall = 0.64, colorData = 0.72, schemeIntegrity = 0.755),
+                    "290" to ColorConfidenceScore(overall = 0.811, colorData = 0.941, schemeIntegrity = 0.98),
+                    "291" to ColorConfidenceScore(overall = 0.901, colorData = 0.901, schemeIntegrity = 0.98),
                 ),
             "mard" to
                 mapOf(
-                    "24" to 0.98,
-                    "48" to 0.98,
-                    "72" to 0.98,
-                    "96" to 0.98,
-                    "120" to 0.98,
-                    "144" to 0.98,
-                    "168" to 0.78,
-                    "221" to 0.98,
-                    "264" to 0.98,
-                    "291" to 0.98,
-                    "295" to 0.98,
+                    "24" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "48" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "72" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "96" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "120" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "144" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "168" to ColorConfidenceScore(overall = 0.88, colorData = 0.98, schemeIntegrity = 0.98),
+                    "221" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "264" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "291" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
+                    "295" to ColorConfidenceScore(overall = 0.98, colorData = 0.98, schemeIntegrity = 0.98),
                 ),
         )
+    // END GENERATED PALETTE CONFIDENCE
 
     val brands: List<ColorConfidenceBrandMatrix> =
         ColorSchemePreset.visibleBrands.map { brand ->
             ColorConfidenceBrandMatrix(
                 brand = brand,
+                scores = brandScoresByBrandId.getValue(brand.id),
                 schemeScores = scoresByBrandId[brand.id].orEmpty(),
             )
         }
@@ -292,6 +340,36 @@ object ColorConfidenceData {
                 label = "Pixel Pattern MARD palettes",
                 summary = "Pixel Pattern \u7684 MARD \u8c03\u8272\u76d8\uff0c\u7528\u6765\u8f85\u52a9\u6838\u5bf9 MARD \u5b8c\u6574\u76d8\u7248\u672c\u548c\u989c\u8272\u5206\u5e03\u3002",
                 url = "https://www.pixel-pattern.com/color-converter",
+            ),
+            ColorConfidenceSource(
+                id = "ycs_artkal_cmini",
+                label = "YCS Artkal C-Mini/M-Mini palettes",
+                summary = "YCS \u5f00\u6e90\u8f6c\u6362\u5668\u4e0e\u5546\u5e97\u6d41\u7a0b\u91cd\u73b0\u4e86 Artkal C-Mini \u548c M-Mini \u8272\u8868\uff0c\u7528\u6765\u72ec\u7acb\u6838\u5bf9\u4f18\u80af\u7cfb\u5217\u3002",
+                url = "https://github.com/carolineyang095-code/ycs-beads-converter",
+            ),
+            ColorConfidenceSource(
+                id = "xzgwhjj_perler_pic",
+                label = "xzgwhjj/perler-pic static colors",
+                summary = "perler-pic \u5f00\u6e90\u9879\u76ee\u7684\u9759\u6001\u8272\u8868\uff0c\u7528\u6765\u68c0\u67e5 colorSystemMapping \u5bb6\u65cf\u7684\u8de8\u9879\u76ee\u590d\u5236\u60c5\u51b5\u3002",
+                url = "https://github.com/xzgwhjj/perler-pic/tree/main/static/colors",
+            ),
+            ColorConfidenceSource(
+                id = "gitee_color_card_web",
+                label = "Gitee bean-color-card-making-webpage palettes",
+                summary = "Gitee \u62fc\u8c46\u8272\u5361\u5de5\u5177\u7684\u591a\u54c1\u724c\u6570\u636e\uff0c\u7528\u6765\u4f5c\u4e3a\u8272\u53f7\u6620\u5c04\u7684\u989d\u5916\u590d\u73b0\u8bc1\u636e\u3002",
+                url = "https://gitee.com/menxiang1202/bean-color-card-making-webpage",
+            ),
+            ColorConfidenceSource(
+                id = "gitee_cc_pindou",
+                label = "Gitee CC-PinDou multi-brand mapping",
+                summary = "CC-PinDou \u5f00\u6e90\u9879\u76ee\u7684\u591a\u54c1\u724c\u6620\u5c04\uff0c\u7528\u6765\u8bc6\u522b\u88ab\u591a\u4e2a\u9879\u76ee\u590d\u5236\u7684\u540c\u6e90\u8272\u8868\u3002",
+                url = "https://gitee.com/ccoooool/CC-PinDou",
+            ),
+            ColorConfidenceSource(
+                id = "atonasting_fuse_bead_tool",
+                label = "atonasting fuse-bead-tool palettes",
+                summary = "atonasting \u62fc\u8c46\u5de5\u5177\u7684\u516c\u5f00\u8c03\u8272\u811a\u672c\uff0c\u7528\u6765\u8865\u5145 MARD \u7b49\u5b8c\u6574\u76d8\u7684\u4ea4\u53c9\u5bf9\u7167\u3002",
+                url = "https://github.com/atonasting/fuse-bead-tool/blob/master/js/palette.v2.1.js",
             ),
         )
 

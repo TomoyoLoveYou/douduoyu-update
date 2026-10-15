@@ -205,6 +205,7 @@ task generateAppIconResources {
         launcherEntries << '''
         <activity
             android:name=".MainActivityDefaultLauncher"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:enabled="true"
             android:exported="true"
             android:label="@string/app_name"
@@ -212,6 +213,7 @@ task generateAppIconResources {
 
         <activity
             android:name=".MainActivityDefaultHomeLauncher"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:enabled="true"
             android:exported="true"
             android:label="@string/app_name"
@@ -219,6 +221,7 @@ task generateAppIconResources {
 
         <activity
             android:name=".MainActivityDefaultIconLauncher"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:enabled="false"
             android:exported="true"
             android:icon="@drawable/''' + defaultIcon.launcherResourceName + '''"
@@ -234,6 +237,7 @@ task generateAppIconResources {
 
         <activity
             android:name=".${icon.launcherSimpleName}"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:enabled="${icon.id == defaultAppIconId ? 'true' : 'false'}"
             android:exported="true"
             android:icon="@drawable/${icon.launcherResourceName}"
@@ -395,8 +399,8 @@ android {
         applicationId "com.douduoyu.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 3
-        versionName "1.2"
+        versionCode 9
+        versionName "1.8"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'

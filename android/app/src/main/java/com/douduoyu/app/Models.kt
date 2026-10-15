@@ -6,12 +6,17 @@ enum class AppScreen {
     Home,
     ImageEditor,
     PatternEditor,
+    ProjectStitch,
+    ProjectSplit,
     BuildMode,
 }
 
 enum class ProjectSourceKind {
     ImageConversion,
     ChartRecognition,
+    Celebration,
+    Stitched,
+    Split,
 }
 
 enum class ToolMode {
@@ -75,6 +80,7 @@ enum class ColorSchemePreset(
     val paletteMode: PaletteMode,
     val showInLogicPanel: Boolean = true,
 ) {
+    // BEGIN GENERATED PALETTE SCHEMES
     Huangdoudou24("\u9ec4\u8c46\u8c46 24\u8272", "huangdoudou", "\u9ec4\u8c46\u8c46", "24", "24\u8272", 24, PaletteMode.Basic),
     Huangdoudou48("\u9ec4\u8c46\u8c46 48\u8272", "huangdoudou", "\u9ec4\u8c46\u8c46", "48", "48\u8272", 48, PaletteMode.Basic),
     Huangdoudou72("\u9ec4\u8c46\u8c46 72\u8272", "huangdoudou", "\u9ec4\u8c46\u8c46", "72", "72\u8272", 72, PaletteMode.Basic),
@@ -124,11 +130,11 @@ enum class ColorSchemePreset(
     Tongqu120("\u7ae5\u8da3 120\u8272", "tongqu", "\u7ae5\u8da3", "120", "120\u8272", 120, PaletteMode.Basic),
     Xiaowu290("\u5c0f\u821e 290\u8272", "xiaowu", "\u5c0f\u821e", "290", "290\u8272", 290, PaletteMode.Basic),
     Xiaowu291("\u5c0f\u821e 291\u8272", "xiaowu", "\u5c0f\u821e", "291", "291\u8272", 291, PaletteMode.Basic),
-    Artkal174("\u4f18\u80af 174\u8272", "artkal", "\u4f18\u80af", "174", "174\u8272", 174, PaletteMode.Basic),
-    Artkal197("\u4f18\u80af 197\u8272", "artkal", "\u4f18\u80af", "197", "197\u8272", 197, PaletteMode.Basic),
-    Artkal221("\u4f18\u80af 221\u8272", "artkal", "\u4f18\u80af", "221", "221\u8272", 221, PaletteMode.Basic),
-    Artkal418("\u4f18\u80af 418\u8272", "artkal", "\u4f18\u80af", "418", "418\u8272", 418, PaletteMode.Basic),
-    Artkal418New("\u4f18\u80af 418-New\u8272", "artkal", "\u4f18\u80af", "418-New", "418-New\u8272", 418, PaletteMode.Basic),
+    Artkal174("\u4f18\u80af C \u7cfb\u5217 174\u8272\uff08\u65e7\u8868\uff09", "artkal", "\u4f18\u80af", "174", "C \u7cfb\u5217 174\u8272\uff08\u65e7\u8868\uff09", 174, PaletteMode.Basic),
+    Artkal197("\u4f18\u80af C \u7cfb\u5217 197\u8272", "artkal", "\u4f18\u80af", "197", "C \u7cfb\u5217 197\u8272", 197, PaletteMode.Basic),
+    Artkal221("\u4f18\u80af M \u7cfb\u5217 221\u8272", "artkal", "\u4f18\u80af", "221", "M \u7cfb\u5217 221\u8272", 221, PaletteMode.Basic),
+    Artkal418("\u4f18\u80af C+M \u5168\u91cf 418\u8272", "artkal", "\u4f18\u80af", "418", "C+M \u5168\u91cf 418\u8272", 418, PaletteMode.Basic),
+    Artkal418New("\u4f18\u80af 418-New\uff08\u7b2c\u4e09\u65b9\u8868\uff09", "artkal", "\u4f18\u80af", "418-New", "418-New 418\u8272\uff08\u7b2c\u4e09\u65b9\u8868\uff09", 418, PaletteMode.Basic),
     Coco24("COCO 24\u8272", "coco", "COCO", "24", "24\u8272", 24, PaletteMode.Basic),
     Coco48("COCO 48\u8272", "coco", "COCO", "48", "48\u8272", 48, PaletteMode.Basic),
     Coco72("COCO 72\u8272", "coco", "COCO", "72", "72\u8272", 72, PaletteMode.Basic),
@@ -163,6 +169,7 @@ enum class ColorSchemePreset(
     MardBrand264("Mard 264\u8272", "mard", "Mard", "264", "264\u8272", 264, PaletteMode.Basic),
     MardBrand291("Mard 291\u8272", "mard", "Mard", "291", "291\u8272", 291, PaletteMode.Basic),
     MardBrand295("Mard 295\u8272", "mard", "Mard", "295", "295\u8272", 295, PaletteMode.Basic),
+    // END GENERATED PALETTE SCHEMES
     Mard24("\u65e7\u7248 Mard 24\u8272", "legacy-mard", "\u65e7\u7248 Mard", "24", "24\u8272", 24, PaletteMode.Basic, showInLogicPanel = false),
     Mard48("\u65e7\u7248 Mard 48\u8272", "legacy-mard", "\u65e7\u7248 Mard", "48", "48\u8272", 48, PaletteMode.Basic, showInLogicPanel = false),
     Mard72("\u65e7\u7248 Mard 72\u8272", "legacy-mard", "\u65e7\u7248 Mard", "72", "72\u8272", 72, PaletteMode.Basic, showInLogicPanel = false),
@@ -175,24 +182,35 @@ enum class ColorSchemePreset(
     ;
 
     companion object {
-        val visibleBrands: List<ColorSchemeBrand> =
-            listOf(
-                ColorSchemeBrand("mard", "Mard", 0.9607),
-                ColorSchemeBrand("tongqu", "\u7ae5\u8da3", 0.98),
-                ColorSchemeBrand("xiaowu", "\u5c0f\u821e", 0.975),
-                ColorSchemeBrand("manman", "\u6f2b\u6f2b", 0.9387),
-                ColorSchemeBrand("panpan", "\u76fc\u76fc", 0.9245),
-                ColorSchemeBrand("mixiaowo", "\u54aa\u5c0f\u7a9d", 0.8752),
-                ColorSchemeBrand("coco", "COCO", 0.8723),
-                ColorSchemeBrand("dodo", "DODO", 0.8355),
-                ColorSchemeBrand("artkal", "\u4f18\u80af", 0.7851),
-                ColorSchemeBrand("huangdoudou", "\u9ec4\u8c46\u8c46", 0.7747),
-                ColorSchemeBrand("shishi", "\u67ff\u67ff", 0.7376),
-                ColorSchemeBrand("kaka", "\u5361\u5361", 0.6998)
+        private val artkalSchemeOrder =
+            mapOf(
+                Artkal197 to 0,
+                Artkal221 to 1,
+                Artkal418 to 2,
+                Artkal174 to 3,
+                Artkal418New to 4,
             )
 
+        // BEGIN GENERATED VISIBLE BRANDS
+        val visibleBrands: List<ColorSchemeBrand> =
+            listOf(
+                ColorSchemeBrand("mard", "Mard", 0.9704),
+                ColorSchemeBrand("tongqu", "\u7ae5\u8da3", 0.98),
+                ColorSchemeBrand("xiaowu", "\u5c0f\u821e", 0.98),
+                ColorSchemeBrand("manman", "\u6f2b\u6f2b", 0.9387),
+                ColorSchemeBrand("panpan", "\u76fc\u76fc", 0.9617),
+                ColorSchemeBrand("mixiaowo", "\u54aa\u5c0f\u7a9d", 0.9478),
+                ColorSchemeBrand("coco", "COCO", 0.8833),
+                ColorSchemeBrand("dodo", "DODO", 0.8491),
+                ColorSchemeBrand("artkal", "\u4f18\u80af", 0.8143),
+                ColorSchemeBrand("huangdoudou", "\u9ec4\u8c46\u8c46", 0.8313),
+                ColorSchemeBrand("shishi", "\u67ff\u67ff", 0.7778),
+                ColorSchemeBrand("kaka", "\u5361\u5361", 0.7137),
+            )
+        // END GENERATED VISIBLE BRANDS
+
         fun visibleSchemesForBrand(brandId: String): List<ColorSchemePreset> {
-            return entries.filter { it.showInLogicPanel && it.brandId == brandId }
+            return orderSchemes(brandId, entries.filter { it.showInLogicPanel && it.brandId == brandId })
         }
 
         fun selectableBrands(currentScheme: ColorSchemePreset): List<ColorSchemeBrand> {
@@ -207,9 +225,20 @@ enum class ColorSchemePreset(
             brandId: String,
             currentScheme: ColorSchemePreset,
         ): List<ColorSchemePreset> {
-            return entries.filter {
+            return orderSchemes(brandId, entries.filter {
                 (it.showInLogicPanel && it.brandId == brandId) ||
                     (!currentScheme.showInLogicPanel && it == currentScheme && it.brandId == brandId)
+            })
+        }
+
+        private fun orderSchemes(
+            brandId: String,
+            schemes: List<ColorSchemePreset>,
+        ): List<ColorSchemePreset> {
+            return if (brandId == "artkal") {
+                schemes.sortedBy { artkalSchemeOrder[it] ?: Int.MAX_VALUE }
+            } else {
+                schemes
             }
         }
     }
@@ -231,6 +260,7 @@ data class GenerationSettings(
     val maxColors: Int = 24,
     val paletteMode: PaletteMode = PaletteMode.Basic,
     val colorScheme: ColorSchemePreset = ColorSchemePreset.MardBrand221,
+    val customColorSchemeId: String? = null,
     val backgroundMode: BackgroundMode = BackgroundMode.Keep,
     val tolerance: Int = 32,
     val speckleReduction: Int = 0,
@@ -248,10 +278,21 @@ data class BeadProject(
     val cells: List<String?>,
     val paletteMode: PaletteMode = PaletteMode.Basic,
     val colorScheme: ColorSchemePreset = ColorSchemePreset.MardBrand221,
+    val customColorSchemeId: String? = null,
     val beadsPerPack: Int = 500,
     val sourceKind: ProjectSourceKind = ProjectSourceKind.ImageConversion,
     val sourceImagePath: String? = null,
+    val stitchSourceRegions: List<StitchSourceRegion> = emptyList(),
     val updatedAt: Long,
+)
+
+data class StitchSourceRegion(
+    val sourceProjectId: String,
+    val sourceTitle: String,
+    val left: Int,
+    val top: Int,
+    val width: Int,
+    val height: Int,
 )
 
 data class BoardViewportState(
