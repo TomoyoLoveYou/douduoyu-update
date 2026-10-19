@@ -31,6 +31,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.Draggable2DState
@@ -137,6 +138,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
@@ -153,6 +155,8 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -206,6 +210,7 @@ import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -1007,30 +1012,42 @@ fun DouDouYuApp() {
                 statusText = if (quality == null) "动画精度已恢复为自动。" else "动画精度已指定为${quality.label()}。"
             }
 
-            fun saveBirthdayCelebrationProject() {
+            fun saveBirthdayCelebrationProject(source: BeadProject) {
                 val existing =
                     projects.firstOrNull {
                         it.id == BirthdayCelebration.GIFT_ID || it.sourceKind == ProjectSourceKind.Celebration
                     }
-                if (existing != null) {
-                    Toast.makeText(context, "生日蛋糕项目已经保存。", Toast.LENGTH_SHORT).show()
-                    return
-                }
-                if (projects.size >= MAX_SAVED_PROJECTS) {
+                if (existing == null && projects.size >= MAX_SAVED_PROJECTS) {
                     Toast.makeText(context, "项目数量已达上限，请先删除一个项目。", Toast.LENGTH_LONG).show()
                     return
                 }
 
-                val usedTitles = projects.mapTo(mutableSetOf()) { it.title.trim() }
+                // 生日工程只保留一份：再次保存时用最新的像素拼豆图覆盖旧工程
+                val others =
+                    projects.filterNot {
+                        it.id == BirthdayCelebration.GIFT_ID || it.sourceKind == ProjectSourceKind.Celebration
+                    }
+                val usedTitles = others.mapTo(mutableSetOf()) { it.title.trim() }
                 val project =
-                    BirthdayCelebration.createCakeProject().copy(
-                        title = nextUniqueProjectTitle(BirthdayCelebration.PROJECT_TITLE, usedTitles),
+                    source.copy(
+                        id = BirthdayCelebration.GIFT_ID,
+                        title = existing?.title
+                            ?: nextUniqueProjectTitle(BirthdayCelebration.PROJECT_TITLE, usedTitles),
                     )
-                saveProjects(listOf(project) + projects)
+                saveProjects(listOf(project) + others)
                 saveProjectResumeScreen(project.id, AppScreen.PatternEditor)
                 store.saveProjectBoardViewport(project.id, centeredBoardViewport())
-                statusText = "“${project.title}”已保存到项目页。"
-                Toast.makeText(context, "生日蛋糕已保存为项目。", Toast.LENGTH_SHORT).show()
+                statusText =
+                    if (existing == null) {
+                        "“${project.title}”已保存到项目页。"
+                    } else {
+                        "“${project.title}”已更新为最新的像素拼豆图。"
+                    }
+                Toast.makeText(
+                    context,
+                    if (existing == null) "生日蛋糕已保存为项目。" else "生日蛋糕已更新为最新的像素拼豆图。",
+                    Toast.LENGTH_SHORT,
+                ).show()
             }
 
             fun saveCurrentBoardViewport(projectId: String) {
@@ -1363,6 +1380,15 @@ fun DouDouYuApp() {
                 mainTab = MainTab.Create
                 screen = AppScreen.ImageEditor
                 statusText = "先导入图纸图片，再裁掉多余留白，最后直接识别成可编辑图纸。"
+            }
+
+            fun closeImageEditorToCreateHub() {
+                sourceBitmap = null
+                sourceBitmapPath = null
+                isImportingImage = false
+                mainTab = MainTab.Create
+                screen = AppScreen.Home
+                statusText = "已回到创建页。"
             }
 
             fun selectMainTab(tab: MainTab) {
@@ -2457,6 +2483,12 @@ fun DouDouYuApp() {
                 closeBuildModeToHome()
             }
 
+            // 图片转图纸 / 图纸识别（都落在 ImageEditor）之前没有返回处理，
+            // 系统返回会直接退出应用；这里与页面左上角的返回按钮走同一套收尾逻辑。
+            BackHandler(enabled = screen == AppScreen.ImageEditor) {
+                closeImageEditorToCreateHub()
+            }
+
             if (showEditorExitDialog) {
                 AlertDialog(
                     onDismissRequest = { showEditorExitDialog = false },
@@ -2815,14 +2847,7 @@ fun DouDouYuApp() {
                         flowKind = createFlowKind,
                         isImportingImage = isImportingImage,
                         isGenerating = isGenerating,
-                        onBack = {
-                            sourceBitmap = null
-                            sourceBitmapPath = null
-                            isImportingImage = false
-                            mainTab = MainTab.Create
-                            screen = AppScreen.Home
-                            statusText = "已回到创建页。"
-                        },
+                        onBack = ::closeImageEditorToCreateHub,
                         onPickImage = { imagePicker.launch(arrayOf("image/*")) },
                         onPickFromCamera = ::openCameraImport,
                         onSettingsChange = { settings = it },
@@ -3446,7 +3471,7 @@ private fun SettingsScreen(
     selectedIconId: String,
     isBirthdayCelebrationRedeemed: Boolean,
     onRedeemBirthdayCode: (String) -> Boolean,
-    onSaveBirthdayProject: () -> Unit,
+    onSaveBirthdayProject: (BeadProject) -> Unit,
     isAnimationDeveloperModeEnabled: Boolean,
     animationQualityOverride: BirthdayAnimationQuality?,
     onRedeemAnimationDeveloperCode: (String) -> Boolean,
@@ -8811,6 +8836,57 @@ private fun PatternThumbnail(project: BeadProject) {
     }
 }
 
+/**
+ * 双指缩放的锚点参数（单根轴）。
+ *
+ * [currentLeadingPadding] / [nextLeadingPadding] 是缩放前后的起始留白：
+ * 画布比视口小时 `resolveDragPaddingPair` 会额外补一半的居中留白，
+ * 这块留白随格子尺寸变化，所以缩放前后必须分别计算，否则锚点会偏。
+ */
+private data class BoardZoomAnchorAxis(
+    val scrollState: ScrollState,
+    val currentLeadingPadding: Float,
+    val nextLeadingPadding: Float,
+    val currentPanToScrollScale: Float,
+    val nextPanToScrollScale: Float,
+)
+
+/**
+ * 双指缩放时把放大/缩小中心挪到两根手指的中点上。
+ *
+ * 屏幕坐标与内容坐标的关系：屏幕 = 起始留白 + 棋盘内坐标 − 逻辑滚动量。
+ * 缩放时棋盘内坐标按 ratio 缩放、留白换成新的那份，要让指下的点保持不动：
+ *
+ *     棋盘内坐标 = 屏幕坐标 + 逻辑滚动量 − 当前留白
+ *     新滚动量   = 新留白 + 棋盘内坐标 × ratio − 屏幕坐标
+ *
+ * 最后按缩放后的 panToScrollScale 换算回 ScrollState 的 proxy 单位（大画布会被压缩）。
+ */
+private fun anchorBoardZoomAt(
+    centroid: Offset,
+    ratio: Float,
+    horizontal: BoardZoomAnchorAxis,
+    vertical: BoardZoomAnchorAxis,
+) {
+    if (!ratio.isFinite() || ratio <= 0f) return
+    anchorBoardZoomAxis(centroid.x, ratio, horizontal)
+    anchorBoardZoomAxis(centroid.y, ratio, vertical)
+}
+
+private fun anchorBoardZoomAxis(
+    position: Float,
+    ratio: Float,
+    axis: BoardZoomAnchorAxis,
+) {
+    val currentScale = axis.currentPanToScrollScale.takeIf { it.isFinite() && it > 0f } ?: 1f
+    val nextScale = axis.nextPanToScrollScale.takeIf { it.isFinite() && it > 0f } ?: currentScale
+    val currentProxy = axis.scrollState.value.toFloat()
+    val logicalScroll = currentProxy / currentScale
+    val boardPoint = position + logicalScroll - axis.currentLeadingPadding
+    val targetLogicalScroll = axis.nextLeadingPadding + boardPoint * ratio - position
+    axis.scrollState.dispatchRawDelta(targetLogicalScroll * nextScale - currentProxy)
+}
+
 @Composable
 private fun PatternBoard(
     project: BeadProject,
@@ -8872,6 +8948,13 @@ private fun PatternBoard(
     val currentOnCanvasGeometryChange by rememberUpdatedState(onCanvasGeometryChange)
     val currentCanvasTopLeft by rememberUpdatedState(canvasTopLeft)
     val currentCanvasSizePx by rememberUpdatedState(canvasSizePx)
+    // 手势节点不随这些值重建（见 pointerInput 的 key），所以用最新值读取
+    val currentCellSize by rememberUpdatedState(cellSize)
+    val currentOnCellSizeChange by rememberUpdatedState(onCellSizeChange)
+    val currentViewportRestoring by rememberUpdatedState(isViewportRestoring)
+    // 单指拖动松手后的惯性滑动；新的手势一来就取消，避免和拖动抢滚动量
+    val flingScope = rememberCoroutineScope()
+    val flingJob = remember { mutableStateOf<Job?>(null) }
     val axisPanelColor = MaterialTheme.colorScheme.surface
     val axisTextColor = MaterialTheme.colorScheme.onSurface
     val axisHighlightColor = MaterialTheme.colorScheme.primary
@@ -9006,6 +9089,8 @@ private fun PatternBoard(
                         insetTopPx = fitViewportInsetTopPx,
                         insetBottomPx = fitViewportInsetBottomPx,
                     )
+                // 手势节点不随 fitCellSize 重建，缩放时要用最新值算最小缩放
+                val currentFitCellSize by rememberUpdatedState(fitCellSize)
                 val (edgePanPaddingStart, edgePanPaddingEnd) =
                     resolveDragPaddingPair(
                         viewportPx = viewportWidthPx,
@@ -9137,18 +9222,44 @@ private fun PatternBoard(
                                 project.width,
                                 project.height,
                                 project.cells,
-                                cellSize,
-                                onCellSizeChange,
-                                fitCellSize,
-                                isViewportRestoring,
-                                horizontalAxis.panToScrollScale,
-                                verticalAxis.panToScrollScale,
                             ) {
-                                if (isViewportRestoring) {
+                                if (currentViewportRestoring) {
                                     return@pointerInput
                                 }
+                                // 画布比视口小时，起始留白里含一半居中补偿，会随格子尺寸变化
+                                fun dragPaddingPx(
+                                    viewportPx: Int,
+                                    boardPx: Float,
+                                    buffer: Dp,
+                                ): Float = ((viewportPx - boardPx).coerceAtLeast(0f) / 2f) + buffer.toPx()
+
+                                /** 「逻辑滚动量 → ScrollState 值」的换算比例，按给定格子尺寸现算 */
+                                fun panScales(cellSizeDp: Float): Pair<Float, Float> {
+                                    val cellPx = cellSizeDp.dp.toPx()
+                                    val boardWidth = boardDisplayWindow.columnCount * cellPx
+                                    val boardHeight = boardDisplayWindow.rowCount * cellPx
+                                    val lx = dragPaddingPx(size.width, boardWidth, dragBufferStart)
+                                    val tx = dragPaddingPx(size.width, boardWidth, dragBufferEnd)
+                                    val ly = dragPaddingPx(size.height, boardHeight, dragBufferTop)
+                                    val ty = dragPaddingPx(size.height, boardHeight, dragBufferBottom)
+                                    val scaleX =
+                                        BoardViewportMath
+                                            .resolveAxis(boardWidth + lx + tx, size.width, horizontalScrollState.value)
+                                            .panToScrollScale
+                                    val scaleY =
+                                        BoardViewportMath
+                                            .resolveAxis(boardHeight + ly + ty, size.height, verticalScrollState.value)
+                                            .panToScrollScale
+                                    return scaleX to scaleY
+                                }
                                 awaitEachGesture {
-                                    var gestureCellSize = cellSize
+                                    val velocityTracker = VelocityTracker()
+                                    var flingScaleX = 1f
+                                    var flingScaleY = 1f
+                                    // 注意：cellSize 不能作为 pointerInput 的 key。
+                                    // 否则每次缩放都会重建手势节点、把正在进行的手势打断，
+                                    // 表现为缩放一顿一顿、锚点对不上。这里每个事件读最新值。
+                                    var gestureCellSize = currentCellSize
                                     var dragOffset = Offset.Zero
                                     var isDragging = false
                                     var pressedCountMax = 0
@@ -9161,17 +9272,51 @@ private fun PatternBoard(
                                             pressedCountMax = max(pressedCountMax, pressedCount)
                                             if (firstDownPosition == null) {
                                                 firstDownPosition = event.changes.firstOrNull { it.pressed }?.position
+                                                // 手指落下就停掉上一次的惯性滑动（不能放在 awaitEachGesture 开头，
+                                                // 那里会在上一次松手后立刻执行，把刚启动的惯性取消掉）
+                                                flingJob.value?.cancel()
                                             }
                                         }
                                         if (pressedCount >= 2) {
                                             val zoomChange = event.calculateZoom()
                                             val panChange = event.calculatePan()
+                                            val onCellSizeChange = currentOnCellSizeChange
+
+                                            // 当前这一帧的棋盘尺寸与留白。画布比视口小时，
+                                            // 起始留白里含一半居中补偿，会随格子尺寸变化，必须每次现算。
+                                            val cellPxNow = gestureCellSize.dp.toPx()
+                                            val boardWidthNow = boardDisplayWindow.columnCount * cellPxNow
+                                            val boardHeightNow = boardDisplayWindow.rowCount * cellPxNow
+                                            val leadingXNow = dragPaddingPx(size.width, boardWidthNow, dragBufferStart)
+                                            val trailingXNow = dragPaddingPx(size.width, boardWidthNow, dragBufferEnd)
+                                            val leadingYNow = dragPaddingPx(size.height, boardHeightNow, dragBufferTop)
+                                            val trailingYNow = dragPaddingPx(size.height, boardHeightNow, dragBufferBottom)
+                                            val axisXNow =
+                                                BoardViewportMath.resolveAxis(
+                                                    logicalContentSizePx = boardWidthNow + leadingXNow + trailingXNow,
+                                                    viewportSizePx = size.width,
+                                                    scrollValuePx = horizontalScrollState.value,
+                                                )
+                                            val axisYNow =
+                                                BoardViewportMath.resolveAxis(
+                                                    logicalContentSizePx = boardHeightNow + leadingYNow + trailingYNow,
+                                                    viewportSizePx = size.height,
+                                                    scrollValuePx = verticalScrollState.value,
+                                                )
+
+                                            // 先按手指位移平移，再缩放：这样双指中心所指的那块内容始终在指下
+                                            if (panChange.x != 0f) {
+                                                horizontalScrollState.dispatchRawDelta(-panChange.x * axisXNow.panToScrollScale)
+                                            }
+                                            if (panChange.y != 0f) {
+                                                verticalScrollState.dispatchRawDelta(-panChange.y * axisYNow.panToScrollScale)
+                                            }
 
                                             if (zoomChange != 1f && onCellSizeChange != null) {
                                                 val minimumCellSize =
                                                     BoardZoomMath.minimumZoomDp(
                                                         standardMinimumZoomDp = BOARD_ZOOM_STANDARD_MIN,
-                                                        fitCellSizeDp = fitCellSize,
+                                                        fitCellSizeDp = currentFitCellSize,
                                                     )
                                                 val gestureMinimumCellSize =
                                                     min(
@@ -9186,19 +9331,58 @@ private fun PatternBoard(
                                                     val reachedFitMinimum =
                                                         gestureCellSize > minimumCellSize * 1.001f &&
                                                             nextCellSize <= minimumCellSize * 1.001f
+                                                    val ratio = nextCellSize / gestureCellSize
+                                                    val centroid = event.calculateCentroid()
                                                     gestureCellSize = nextCellSize
                                                     onCellSizeChange(nextCellSize)
+
+                                                    // 以双指中心为缩放中心：放大/缩小都保持指下的那颗格子不动。
+                                                    // 缩放后留白与 proxy 换算比例都会变，先算出新的一套再补偿滚动量。
+                                                    if (ratio != 1f && centroid.isSpecified) {
+                                                        val nextCellPx = nextCellSize.dp.toPx()
+                                                        val nextBoardWidthPx = boardDisplayWindow.columnCount * nextCellPx
+                                                        val nextBoardHeightPx = boardDisplayWindow.rowCount * nextCellPx
+                                                        val nextLeadingX = dragPaddingPx(size.width, nextBoardWidthPx, dragBufferStart)
+                                                        val nextTrailingX = dragPaddingPx(size.width, nextBoardWidthPx, dragBufferEnd)
+                                                        val nextLeadingY = dragPaddingPx(size.height, nextBoardHeightPx, dragBufferTop)
+                                                        val nextTrailingY = dragPaddingPx(size.height, nextBoardHeightPx, dragBufferBottom)
+                                                        val nextAxisX =
+                                                            BoardViewportMath.resolveAxis(
+                                                                logicalContentSizePx = nextBoardWidthPx + nextLeadingX + nextTrailingX,
+                                                                viewportSizePx = size.width,
+                                                                scrollValuePx = 0,
+                                                            )
+                                                        val nextAxisY =
+                                                            BoardViewportMath.resolveAxis(
+                                                                logicalContentSizePx = nextBoardHeightPx + nextLeadingY + nextTrailingY,
+                                                                viewportSizePx = size.height,
+                                                                scrollValuePx = 0,
+                                                            )
+                                                        anchorBoardZoomAt(
+                                                            centroid = centroid,
+                                                            ratio = ratio,
+                                                            horizontal =
+                                                                BoardZoomAnchorAxis(
+                                                                    scrollState = horizontalScrollState,
+                                                                    currentLeadingPadding = leadingXNow,
+                                                                    nextLeadingPadding = nextLeadingX,
+                                                                    currentPanToScrollScale = axisXNow.panToScrollScale,
+                                                                    nextPanToScrollScale = nextAxisX.panToScrollScale,
+                                                                ),
+                                                            vertical =
+                                                                BoardZoomAnchorAxis(
+                                                                    scrollState = verticalScrollState,
+                                                                    currentLeadingPadding = leadingYNow,
+                                                                    nextLeadingPadding = nextLeadingY,
+                                                                    currentPanToScrollScale = axisYNow.panToScrollScale,
+                                                                    nextPanToScrollScale = nextAxisY.panToScrollScale,
+                                                                ),
+                                                        )
+                                                    }
                                                     if (reachedFitMinimum) {
                                                         currentOnFitRequest?.invoke()
                                                     }
                                                 }
-                                            }
-
-                                            if (panChange.x != 0f) {
-                                                horizontalScrollState.dispatchRawDelta(-panChange.x * horizontalAxis.panToScrollScale)
-                                            }
-                                            if (panChange.y != 0f) {
-                                                verticalScrollState.dispatchRawDelta(-panChange.y * verticalAxis.panToScrollScale)
                                             }
 
                                             event.changes.forEach { change ->
@@ -9214,8 +9398,11 @@ private fun PatternBoard(
                                                     isDragging = dragOffset.getDistance() > touchSlop
                                                 }
                                                 if (isDragging) {
-                                                    horizontalScrollState.dispatchRawDelta(-panChange.x * horizontalAxis.panToScrollScale)
-                                                    verticalScrollState.dispatchRawDelta(-panChange.y * verticalAxis.panToScrollScale)
+                                                    val (scaleX, scaleY) = panScales(gestureCellSize)
+                                                    flingScaleX = scaleX
+                                                    flingScaleY = scaleY
+                                                    horizontalScrollState.dispatchRawDelta(-panChange.x * scaleX)
+                                                    verticalScrollState.dispatchRawDelta(-panChange.y * scaleY)
                                                     event.changes.forEach { change ->
                                                         if (change.positionChanged()) {
                                                             change.consume()
@@ -9223,6 +9410,8 @@ private fun PatternBoard(
                                                     }
                                                 }
                                             }
+                                            // 记录速度，松手后用来做惯性滑动
+                                            event.changes.forEach { velocityTracker.addPointerInputChange(it) }
                                         }
                                     } while (event.changes.any { it.pressed })
 
@@ -9232,6 +9421,42 @@ private fun PatternBoard(
                                                 position = position,
                                                 cellIndex = resolveCellIndexAtSurfacePosition(position),
                                             )
+                                        }
+                                    }
+
+                                    // 单指拖动松手后按速度惯性滑动，靠近边缘会自然停下
+                                    if (isDragging && pressedCountMax == 1) {
+                                        val velocity = velocityTracker.calculateVelocity()
+                                        val startVx = -velocity.x * flingScaleX
+                                        val startVy = -velocity.y * flingScaleY
+                                        if (abs(startVx) > 60f || abs(startVy) > 60f) {
+                                            flingJob.value =
+                                                flingScope.launch {
+                                                    var vx = startVx
+                                                    var vy = startVy
+                                                    var lastFrame = 0L
+                                                    while (abs(vx) > 25f || abs(vy) > 25f) {
+                                                        withFrameNanos { now ->
+                                                            if (lastFrame != 0L) {
+                                                                val dt =
+                                                                    ((now - lastFrame) / 1_000_000_000f)
+                                                                        .coerceIn(0f, 0.05f)
+                                                                if (dt > 0f) {
+                                                                    val consumedX =
+                                                                        horizontalScrollState.dispatchRawDelta(vx * dt)
+                                                                    val consumedY =
+                                                                        verticalScrollState.dispatchRawDelta(vy * dt)
+                                                                    if (abs(consumedX) < 0.5f) vx = 0f
+                                                                    if (abs(consumedY) < 0.5f) vy = 0f
+                                                                    val decay = exp(-dt * 4.2f)
+                                                                    vx *= decay
+                                                                    vy *= decay
+                                                                }
+                                                            }
+                                                            lastFrame = now
+                                                        }
+                                                    }
+                                                }
                                         }
                                     }
                                 }

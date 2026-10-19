@@ -20,6 +20,10 @@ internal object BirthdayCelebration {
     const val RECIPIENT_NAME = "\u5c0f\u9c7c"
     const val GREETING = "\u5c0f\u9c7c\u751f\u65e5\u5feb\u4e50"
     const val PROJECT_TITLE = "\u5c0f\u9c7c\u7684\u751f\u65e5\u86cb\u7cd5"
+
+    /** 与 assets/birthday/index.html 里的 THEMES 顺序保持一致 */
+    const val CAKE_THEME_STRAWBERRY = 0
+    const val CAKE_THEME_COUNT = 4
     val candleColumns = intArrayOf(13, 19, 25)
     val template = BirthdayCelebrationTemplate.BirthdayCake
     val config =
@@ -180,10 +184,25 @@ internal class BirthdayCelebrationStore(context: Context) {
         return true
     }
 
+    /** 兑换后是否已经播过第一遍（第一遍固定草莓奶油） */
+    fun hasPlayedCake(): Boolean = preferences.getBoolean(KEY_PLAYED, false)
+
+    /** 上一次播放用的配色索引 */
+    fun lastCakeTheme(): Int = preferences.getInt(KEY_LAST_THEME, BirthdayCelebration.CAKE_THEME_STRAWBERRY)
+
+    fun recordCakeTheme(index: Int) {
+        preferences.edit()
+            .putBoolean(KEY_PLAYED, true)
+            .putInt(KEY_LAST_THEME, index)
+            .apply()
+    }
+
     private companion object {
         const val PREFERENCES_NAME = "douduoyu-birthday-celebration"
         const val KEY_REDEEMED = "redeemed"
         const val KEY_REDEEMED_AT = "redeemed_at"
+        const val KEY_PLAYED = "cake_played"
+        const val KEY_LAST_THEME = "cake_last_theme"
         const val NO_REDEMPTION_TIME = Long.MIN_VALUE
     }
 }

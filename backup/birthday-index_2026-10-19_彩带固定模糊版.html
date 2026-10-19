@@ -1,0 +1,1347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>生日蛋糕</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #120d1a; }
+  body {
+    background:
+      radial-gradient(120% 60% at 50% 10%, rgba(150,104,160,.55) 0%, rgba(120,80,132,0) 62%),
+      linear-gradient(170deg, #4d3560 0%, #43304f 48%, #392a47 100%);
+  }
+  #scene {
+    position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+    image-rendering: auto;
+  }
+  /* 最终展示底色：由原生传入拼豆页同款颜色；位于 3D 画布下方，只在画布淡出时露出 */
+  #finalbg {
+    position: fixed; inset: 0; opacity: 1; pointer-events: none;
+    background: #F1E8DB;
+  }
+  #beads {
+    position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+    opacity: 0; pointer-events: none;
+  }
+  #veil {
+    position: fixed; inset: 0; background: #120d1a; opacity: 1; z-index: 10;
+    transition: opacity .9s ease; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="finalbg"></div>
+<canvas id="scene"></canvas>
+<canvas id="beads"></canvas>
+<div id="veil"></div>
+
+<script>
+  // 兜底：若设备 WebView 过旧、ES module 没能执行，避免一直黑屏
+  window.__birthdayFallback = setTimeout(function () {
+    if (window.birthdayCake) return;
+    var veil = document.getElementById('veil');
+    if (veil) veil.style.display = 'none';
+    try { if (window.__birthday) window.__birthday.onComplete(); } catch (e) {}
+  }, 6000);
+</script>
+
+<script type="module">
+import * as THREE from './three.module.js';
+
+if (window.__birthdayFallback) clearTimeout(window.__birthdayFallback);
+
+/* =====================================================================
+   生日蛋糕 3D 动画
+   时间轴（秒）
+     0.0  ~ 1.0   俯视高视角停留
+     1.0  ~ 11.2  视角持续旋转 + 降低
+     11.2 ~ 12.8  停在复位视角
+     12.8 ~ 17.2  蛋糕像素化
+     17.2 ~ 20.8  像素图 → App 内置拼豆图
+   ===================================================================== */
+
+const params = new URLSearchParams(location.search);
+const qualityName = params.get('quality') || 'standard';
+const QUALITY = ({
+  low:      { dpr: 1.0, shadow: 1024, confetti: 16, antialias: false },
+  standard: { dpr: 1.3, shadow: 1536, confetti: 28, antialias: true  },
+  refined:  { dpr: 1.6, shadow: 2048, confetti: 42, antialias: true  }
+})[qualityName] || { dpr: 1.3, shadow: 1536, confetti: 28, antialias: true };
+
+const T = {
+  topHold: 1.0,
+  cameraMove: 10.2,
+  hold: 1.6,
+  pixel: 4.4,
+  bead: 3.6,
+};
+T.cameraEnd = T.topHold + T.cameraMove;          // 11.2
+T.holdEnd = T.cameraEnd + T.hold;                // 12.8
+T.pixelEnd = T.holdEnd + T.pixel;                // 17.2
+T.total = T.pixelEnd + T.bead;                   // 20.8
+const P = {
+  cameraEnd: T.cameraEnd / T.total,
+  holdEnd: T.holdEnd / T.total,
+  pixelEnd: T.pixelEnd / T.total,
+};
+
+let t = 0;
+let paused = false;
+let completed = false;
+let pattern = null;
+let layout = { side: false };
+let beadProgress = 0;
+
+const sceneCanvas = document.getElementById('scene');
+const beadCanvas = document.getElementById('beads');
+const finalBg = document.getElementById('finalbg');
+const veil = document.getElementById('veil');
+
+/* ------------------------------- 渲染器 ------------------------------- */
+let renderer = null;
+let webglOk = true;
+try {
+  renderer = new THREE.WebGLRenderer({
+    canvas: sceneCanvas,
+    antialias: QUALITY.antialias,
+    alpha: true,
+    powerPreference: 'high-performance',
+  });
+} catch (err) {
+  webglOk = false;
+}
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+
+/* ------------------------------- 背景 ------------------------------- */
+// uBg: 0 = 3js 紫，1 = 拼豆页米黄。转场时在 3D 里直接过渡，避免用不透明蒙层盖住像素图
+const bgUniforms = { uBg: { value: 0 } };
+const bgMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(60, 32, 20),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: bgUniforms,
+    vertexShader: `
+      varying vec3 vN;
+      void main() {
+        vN = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uBg;
+      varying vec3 vN;
+      void main() {
+        float h = clamp(vN.y * 0.5 + 0.5, 0.0, 1.0);
+        vec3 top = mix(vec3(0.315, 0.225, 0.395), vec3(0.972, 0.949, 0.914), uBg);
+        vec3 mid = mix(vec3(0.264, 0.192, 0.318), vec3(0.945, 0.910, 0.859), uBg);
+        vec3 bot = mix(vec3(0.176, 0.137, 0.227), vec3(0.918, 0.871, 0.816), uBg);
+        vec3 c = h > 0.5 ? mix(mid, top, (h - 0.5) * 2.0) : mix(bot, mid, h * 2.0);
+        // 紫 → 米黄直接做 RGB 平均，中段会发灰；补一点暖色，让过渡经过暖灰而不是死灰
+        float warm = sin(uBg * 3.14159265);
+        c.r += 0.055 * warm;
+        c.g += 0.020 * warm;
+        c.b -= 0.030 * warm;
+        gl_FragColor = vec4(c, 1.0);
+      }
+    `,
+  })
+);
+scene.add(bgMesh);
+
+if (renderer) {
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, QUALITY.dpr));
+  // 软阴影用贴图实现，关掉 shadow map：更省性能，也不会在低视角出现地平线暗带
+  renderer.shadowMap.enabled = false;
+  renderer.toneMapping = THREE.NoToneMapping;
+}
+
+/* ---------------------------- 卡通梯度 / 描边 ---------------------------- */
+function makeGradientMap(values) {
+  const data = Uint8Array.from(values);
+  const tex = new THREE.DataTexture(data, values.length, 1, THREE.RedFormat);
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return tex;
+}
+const GRADIENT = makeGradientMap([180, 212, 242, 255]);
+const OUTLINE_MAT = new THREE.MeshBasicMaterial({ color: 0x8f7580, side: THREE.BackSide });
+function toon(color) { return new THREE.MeshToonMaterial({ color, gradientMap: GRADIENT }); }
+function outline(mesh, sxz = 1.03, sy = 1.006) {
+  const o = new THREE.Mesh(mesh.geometry, OUTLINE_MAT);
+  o.scale.set(sxz, sy, sxz);
+  mesh.add(o);
+  return mesh;
+}
+
+/* ---------------------------- 程序化贴图 ---------------------------- */
+function spongeTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 1900; i++) {
+    const x = Math.random() * 512, y = Math.random() * 512, r = 1.2 + Math.random() * 3.0;
+    g.fillStyle = 'rgba(122,90,60,' + (0.05 + Math.random() * 0.10) + ')';
+    g.beginPath(); g.arc(x, y, r, 0, 6.2832); g.fill();
+  }
+  for (let i = 0; i < 220; i++) {
+    const x = Math.random() * 512, y = Math.random() * 512, r = 1.2 + Math.random() * 2.2;
+    g.fillStyle = 'rgba(255,255,255,0.7)';
+    g.beginPath(); g.arc(x, y, r, 0, 6.2832); g.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(10, 1);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function berryTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 150; i++) {
+    const x = Math.random() * 256, y = Math.random() * 256;
+    g.save();
+    g.translate(x, y); g.rotate(Math.random() * 3.14);
+    g.fillStyle = 'rgba(70,30,34,' + (0.38 + Math.random() * 0.3) + ')';
+    g.beginPath(); g.ellipse(0, 0, 3.6, 2.2, 0, 0, 6.2832); g.fill();
+    g.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/* ---------------------------- 旋转曲面建模 ---------------------------- */
+function revolveSurface(profile, seg = 128, wave = null) {
+  const n = profile.length;
+  const pos = new Float32Array((seg + 1) * n * 3);
+  const uv = new Float32Array((seg + 1) * n * 2);
+  const idx = [];
+  let p = 0, q = 0;
+  for (let i = 0; i <= seg; i++) {
+    const tt = i / seg, th = tt * Math.PI * 2;
+    for (let j = 0; j < n; j++) {
+      let r = profile[j][0], y = profile[j][1];
+      if (wave) { const w = wave(th, r, j / (n - 1)); r += w[0]; y += w[1]; }
+      pos[p++] = Math.cos(th) * r; pos[p++] = y; pos[p++] = Math.sin(th) * r;
+      uv[q++] = tt; uv[q++] = j / (n - 1);
+    }
+  }
+  for (let i = 0; i < seg; i++) {
+    for (let j = 0; j < n - 1; j++) {
+      const a = i * n + j, b = (i + 1) * n + j, c = (i + 1) * n + j + 1, d = i * n + j + 1;
+      idx.push(a, b, d, b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+function revolveMesh(profile, mat, seg, wave, oSxz, oSy) {
+  const ys = profile.map(p => p[1]);
+  const cy = (Math.min.apply(null, ys) + Math.max.apply(null, ys)) / 2;
+  const local = profile.map(([r, y]) => [r, y - cy]);
+  const m = new THREE.Mesh(revolveSurface(local, seg, wave), mat);
+  m.position.y = cy;
+  outline(m, oSxz, oSy);
+  return m;
+}
+
+/* ------------------------------- 配色 ------------------------------- */
+const THEME = {
+  name: '草莓奶油', sponge: 0xffb3cc, jam: 0xff4d6b, cream: 0xfffaf8, berry: 0xff3d5a,
+  candle: 0xff8fb3, stripe: 0xffffff,
+  sprinkles: [0xffd166, 0x8ad7ff, 0xff9ec7, 0xffffff],
+};
+const MAT = {
+  plate: toon(0xffffff),
+  sponge: new THREE.MeshToonMaterial({ color: THEME.sponge, gradientMap: GRADIENT, map: spongeTexture() }),
+  jam: toon(THEME.jam),
+  cream: toon(THEME.cream),
+  berry: new THREE.MeshToonMaterial({ color: THEME.berry, gradientMap: GRADIENT, map: berryTexture() }),
+  leaf: toon(0x76c450),
+  candle: toon(THEME.candle),
+  stripe: toon(THEME.stripe),
+  wick: toon(0x3f2f38),
+};
+const sprinkleMats = THEME.sprinkles.map(c => toon(c));
+
+/* ------------------------------- 灯光 ------------------------------- */
+scene.add(new THREE.AmbientLight(0xffffff, 0.52));
+scene.add(new THREE.HemisphereLight(0xffffff, 0xe8dce6, 0.42));
+
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.55);
+keyLight.position.set(6, 9.5, 6);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(QUALITY.shadow, QUALITY.shadow);
+keyLight.shadow.camera.near = 0.5;
+keyLight.shadow.camera.far = 34;
+keyLight.shadow.camera.left = -10;
+keyLight.shadow.camera.right = 10;
+keyLight.shadow.camera.top = 13;
+keyLight.shadow.camera.bottom = -3;
+keyLight.shadow.bias = -0.0012;
+keyLight.shadow.normalBias = 0.022;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0xfff4f6, 0.5);
+fillLight.position.set(-7, 4, -5);
+scene.add(fillLight);
+
+// 软阴影贴图：径向渐变铺在蛋糕下方，不参与 shadow map
+const shadowCanvas = document.createElement('canvas');
+shadowCanvas.width = shadowCanvas.height = 256;
+const sctx = shadowCanvas.getContext('2d');
+const sgrad = sctx.createRadialGradient(128, 128, 8, 128, 128, 126);
+sgrad.addColorStop(0, 'rgba(0,0,0,0.46)');
+sgrad.addColorStop(0.5, 'rgba(0,0,0,0.22)');
+sgrad.addColorStop(1, 'rgba(0,0,0,0)');
+sctx.fillStyle = sgrad;
+sctx.fillRect(0, 0, 256, 256);
+const shadowTexture = new THREE.CanvasTexture(shadowCanvas);
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(9.4, 9.4),
+  new THREE.MeshBasicMaterial({
+    map: shadowTexture,
+    transparent: true,
+    depthWrite: false,
+    opacity: 0.9,
+  })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(0.1, 0.004, 0.08);
+scene.add(ground);
+
+/* ------------------------------- 蛋糕 ------------------------------- */
+const cake = new THREE.Group();
+scene.add(cake);
+
+const plate = revolveMesh(
+  [
+    [0.001, 0.22], [1.40, 0.22], [2.45, 0.215], [2.78, 0.20], [2.95, 0.155], [3.03, 0.09],
+    [3.00, 0.035], [2.78, 0.0], [2.20, -0.015], [1.20, -0.025], [0.001, -0.03],
+    [0.001, 0.22],
+  ],
+  MAT.plate, 96,
+  (th, r) => {
+    const w = Math.max(0, (r - 2.35) / 0.65);
+    return [0.07 * w * Math.cos(12 * th), 0.018 * w * Math.cos(12 * th)];
+  },
+  1.018, 1.02
+);
+plate.receiveShadow = true;
+cake.add(plate);
+
+function spongeTier(rB, rT, yBase, h, jamH) {
+  const g = new THREE.Group();
+  const sH = (h - jamH) / 2;
+  const mk = (rt, rb, hh, y) => {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, hh, 56, 1), MAT.sponge);
+    m.position.y = y + hh / 2;
+    outline(m, 1.022, 1.004);
+    return m;
+  };
+  g.add(mk((rB + rT) / 2, rB, sH, yBase));
+  const jr = ((rB + rT) / 2) * 1.004;
+  const jam = new THREE.Mesh(new THREE.CylinderGeometry(jr, jr, jamH, 56, 1), MAT.jam);
+  jam.position.y = yBase + sH + jamH / 2;
+  outline(jam, 1.022, 1.06);
+  g.add(jam);
+  g.add(mk(rT, (rB + rT) / 2, sH, yBase + sH + jamH));
+  return g;
+}
+cake.add(spongeTier(2.72, 2.66, 0.26, 1.16, 0.14));
+cake.add(spongeTier(1.98, 1.92, 1.38, 0.92, 0.12));
+
+cake.add(revolveMesh(
+  [
+    [2.36, 1.44], [2.56, 1.455], [2.72, 1.41], [2.79, 1.29], [2.75, 1.16], [2.66, 1.03],
+    [2.59, 1.05], [2.58, 1.19], [2.56, 1.34], [2.46, 1.425], [2.36, 1.44],
+  ],
+  MAT.cream, 128,
+  (th, r) => {
+    const w = Math.max(0, (r - 2.5) / 0.35);
+    return [0.035 * w * Math.cos(7 * th), 0.07 * w * Math.cos(7 * th + 0.6)];
+  },
+  1.024, 1.008
+));
+
+cake.add(revolveMesh(
+  [
+    [0.001, 2.60], [0.40, 2.59], [0.80, 2.555], [1.20, 2.485], [1.55, 2.365],
+    [1.83, 2.245], [1.97, 2.125], [2.03, 1.985], [1.96, 1.94],
+    [1.83, 1.965], [1.85, 2.10], [1.70, 2.24], [1.15, 2.34], [0.50, 2.40], [0.001, 2.41],
+    [0.001, 2.60],
+  ],
+  MAT.cream, 128,
+  (th, r) => {
+    const w = Math.max(0, Math.min(1, (r - 1.3) / 0.6));
+    return [0.045 * w * Math.cos(7 * th), 0.075 * w * Math.cos(7 * th + 0.6)];
+  },
+  1.022, 1.008
+));
+
+function dripGroup(list) {
+  const g = new THREE.Group();
+  for (const [ang, R, yTop, len] of list) {
+    const a = ang * Math.PI / 180;
+    const rad = 0.08 + Math.random() * 0.03;
+    const cap = new THREE.Mesh(new THREE.CapsuleGeometry(rad, len, 4, 12), MAT.cream);
+    cap.position.set(Math.cos(a) * R, yTop - len / 2 - rad * 0.5, Math.sin(a) * R);
+    outline(cap, 1.05, 1.012);
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(rad * 1.02, 12, 10), MAT.cream);
+    tip.position.set(cap.position.x, yTop - len - rad * 0.5, cap.position.z);
+    outline(tip, 1.06, 1.06);
+    g.add(cap, tip);
+  }
+  return g;
+}
+cake.add(dripGroup([
+  [12, 2.64, 1.24, 0.20], [78, 2.66, 1.22, 0.30], [140, 2.63, 1.26, 0.18],
+  [205, 2.65, 1.23, 0.28], [268, 2.62, 1.25, 0.23], [322, 2.66, 1.24, 0.16],
+]));
+cake.add(dripGroup([
+  [30, 1.96, 2.06, 0.20], [104, 1.98, 2.04, 0.30], [176, 1.95, 2.08, 0.18],
+  [248, 1.97, 2.05, 0.27], [312, 1.96, 2.07, 0.22],
+]));
+
+/* ------------------------------- 草莓 ------------------------------- */
+const BERRY_R = 0.30, BERRY_H = 0.60;
+const BERRY_GEO = (() => {
+  const pts = [];
+  const N = 24;
+  for (let i = 0; i <= N; i++) {
+    const u = -1 + 2 * (i / N);
+    let r = Math.sqrt(Math.max(0, 1 - u * u));
+    r *= (1 - 0.42 * Math.max(0, -u));
+    pts.push(new THREE.Vector2(Math.max(0.0006, r * BERRY_R), (u + 1) * 0.5 * BERRY_H - BERRY_H / 2));
+  }
+  return new THREE.LatheGeometry(pts, 26);
+})();
+const LEAF_GEO = new THREE.SphereGeometry(1, 12, 9);
+
+function makeBerry(s) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(BERRY_GEO, MAT.berry);
+  body.scale.setScalar(s);
+  outline(body, 1.055, 1.055);
+  g.add(body);
+  const topY = (BERRY_H / 2) * s;
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 + 0.4;
+    const leaf = new THREE.Mesh(LEAF_GEO, MAT.leaf);
+    leaf.position.set(Math.cos(a) * 0.14 * s, topY + 0.035 * s, Math.sin(a) * 0.14 * s);
+    leaf.scale.set(0.17 * s, 0.035 * s, 0.09 * s);
+    leaf.rotation.y = -a;
+    leaf.rotation.z = -0.32;
+    g.add(leaf);
+  }
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.018 * s, 0.022 * s, 0.1 * s, 6), MAT.leaf);
+  stem.position.y = topY + 0.06 * s;
+  g.add(stem);
+  return g;
+}
+
+const berryMain = makeBerry(1.35);
+berryMain.position.set(0, 2.74, 0);
+cake.add(berryMain);
+
+for (let i = 0; i < 6; i++) {
+  const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+  const b = makeBerry(0.66);
+  b.position.set(Math.cos(a) * 1.56, 2.44, Math.sin(a) * 1.56);
+  b.rotation.z = -Math.cos(a) * 0.30;
+  b.rotation.x = Math.sin(a) * 0.30;
+  cake.add(b);
+}
+for (let i = 0; i < 7; i++) {
+  const a = (i / 7) * Math.PI * 2 + 0.35;
+  const b = makeBerry(0.55);
+  b.position.set(Math.cos(a) * 2.50, 1.50, Math.sin(a) * 2.50);
+  b.rotation.z = -Math.cos(a) * 0.22;
+  b.rotation.x = Math.sin(a) * 0.22;
+  cake.add(b);
+}
+
+const SPRINKLE_GEO = new THREE.CapsuleGeometry(0.05, 0.1, 3, 8);
+const sprinkles = new THREE.Group();
+for (let i = 0; i < 30; i++) {
+  const a = Math.random() * Math.PI * 2;
+  const r = 0.25 + Math.random() * 1.35;
+  const m = new THREE.Mesh(SPRINKLE_GEO, sprinkleMats[(Math.random() * sprinkleMats.length) | 0]);
+  m.position.set(Math.cos(a) * r, 2.42 + (1.6 - r) * 0.13 + Math.random() * 0.04, Math.sin(a) * r);
+  m.rotation.set(Math.random() * 3.14, Math.random() * 3.14, Math.random() * 3.14);
+  sprinkles.add(m);
+}
+cake.add(sprinkles);
+
+/* ------------------------------- 蜡烛 ------------------------------- */
+const flames = [], flameLights = [];
+const candleGroup = new THREE.Group();
+candleGroup.position.y = 2.39;
+cake.add(candleGroup);
+const candleXZ = [[0, 0.92], [-0.80, -0.46], [0.80, -0.46]];
+
+function flameGeometry(R, H) {
+  const pts = [];
+  const N = 18;
+  for (let i = 0; i <= N; i++) {
+    const tt = i / N;
+    const r = R * Math.sin(Math.PI * Math.pow(tt, 0.62)) * (1 - 0.22 * tt);
+    pts.push(new THREE.Vector2(Math.max(0.0006, r), tt * H - H / 2));
+  }
+  return new THREE.LatheGeometry(pts, 16);
+}
+function makeCandle(x, z, phase) {
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.088, 0.096, 0.92, 18, 1), MAT.candle);
+  body.position.y = 0.46;
+  outline(body, 1.06, 1.008);
+  g.add(body);
+  for (let i = 0; i < 4; i++) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.091, 0.024, 6, 22), MAT.stripe);
+    ring.rotation.x = Math.PI / 2;
+    ring.rotation.y = 0.42;
+    ring.position.y = 0.14 + i * 0.21;
+    g.add(ring);
+  }
+  const wick = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.085, 6), MAT.wick);
+  wick.position.y = 0.96;
+  g.add(wick);
+  const flame = new THREE.Group();
+  flame.position.y = 1.05;
+  const outer = new THREE.Mesh(flameGeometry(0.098, 0.30), new THREE.MeshBasicMaterial({ color: 0xff8a3d }));
+  const inner = new THREE.Mesh(flameGeometry(0.052, 0.19), new THREE.MeshBasicMaterial({ color: 0xffe08a }));
+  inner.position.y = -0.02;
+  flame.add(outer, inner);
+  flame.userData.phase = phase;
+  g.add(flame);
+  flames.push(flame);
+  const pl = new THREE.PointLight(0xffb066, 0, 3.0, 2);
+  pl.position.set(0, 1.16, 0);
+  g.add(pl);
+  flameLights.push(pl);
+  return g;
+}
+candleXZ.forEach(([x, z], i) => candleGroup.add(makeCandle(x, z, i * 2.1)));
+
+cake.traverse(o => { if (o.isMesh && o.material !== OUTLINE_MAT) o.castShadow = true; });
+plate.receiveShadow = true;
+
+/* ------------------------------ 彩带 / 糖屑 ------------------------------ */
+const confetti = new THREE.Group();
+scene.add(confetti);
+const confettiData = [];
+const confettiColors = [0xff9ec7, 0xffd166, 0x8ad7ff, 0xb5a8ff, 0xffffff];
+for (let i = 0; i < QUALITY.confetti; i++) {
+  const isRibbon = i % 3 === 0;
+  const geo = isRibbon ? new THREE.PlaneGeometry(0.09, 0.34) : new THREE.PlaneGeometry(0.2, 0.13);
+  const m = new THREE.Mesh(
+    geo,
+    new THREE.MeshBasicMaterial({
+      color: confettiColors[i % confettiColors.length],
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.85,
+    })
+  );
+  const a = Math.random() * Math.PI * 2, r = 4.4 + Math.random() * 4.5;
+  m.position.set(Math.cos(a) * r, 0.8 + Math.random() * 6.0, Math.sin(a) * r);
+  m.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+  confetti.add(m);
+  confettiData.push({
+    mesh: m,
+    baseY: m.position.y,
+    speed: 0.35 + Math.random() * 0.6,
+    spin: (Math.random() - 0.5) * 1.1,
+    drift: (Math.random() - 0.5) * 0.5,
+    phase: Math.random() * 6.283,
+  });
+}
+
+/* ---------------------------- 相机：脚本化动画 ---------------------------- */
+const ctrl = { target: new THREE.Vector3(0, 1.95, 0), theta: 0.62, phi: 1.06, radius: 11 };
+const START = { theta: -1.35, phi: 0.12, radius: 22 };
+const END = { theta: 0.62 + Math.PI * 4, phi: 1.06, radius: 11 };
+// 俯视停留阶段的缓慢自转速度（弧度/秒）
+const HOLD_SPIN = 0.10;
+// 主镜头必须从「停留结束那一帧的实际角度」接着走，
+// 否则 t=topHold 时会从 START.theta 重新开始，角度回退 → 看得见的“重置/卡顿”
+const MOVE_THETA_FROM = START.theta + T.topHold * HOLD_SPIN;
+
+function fitRadius() {
+  const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const needV = 3.05 / tanV;
+  const needH = 3.5 / (tanV * Math.max(0.35, camera.aspect));
+  return Math.min(26, Math.max(11.5, Math.max(needV, needH)));
+}
+
+function easeInOutCubic(x) {
+  return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+}
+function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+function lerp(a, b, x) { return a + (b - a) * x; }
+
+function applyCamera(theta, phi, radius) {
+  const sp = Math.sin(phi);
+  camera.position.set(
+    ctrl.target.x + radius * sp * Math.sin(theta),
+    ctrl.target.y + radius * Math.cos(phi),
+    ctrl.target.z + radius * sp * Math.cos(theta)
+  );
+  camera.lookAt(ctrl.target);
+}
+
+function updateCamera(time) {
+  if (time < T.topHold) {
+    // 俯视高视角：轻微自转，先让观众看清蛋糕顶部
+    applyCamera(START.theta + time * HOLD_SPIN, START.phi, START.radius);
+    return;
+  }
+  if (time < T.cameraEnd) {
+    const u = easeInOutCubic((time - T.topHold) / T.cameraMove);
+    applyCamera(
+      lerp(MOVE_THETA_FROM, END.theta, u),
+      lerp(START.phi, END.phi, u),
+      lerp(START.radius, END.radius, u)
+    );
+    return;
+  }
+  // 停在复位视角，保留极轻微的呼吸感
+  const breathe = Math.sin((time - T.cameraEnd) * 0.9) * 0.012;
+  applyCamera(END.theta + breathe, END.phi + breathe * 0.5, END.radius);
+}
+
+/* ---------------------------- 像素化后处理 ---------------------------- */
+const postScene = new THREE.Scene();
+const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const postUniforms = {
+  tDiffuse: { value: null },
+  uBlock: { value: 1 },
+  uLevels: { value: 255 },
+  uBlur: { value: 0 },
+  uRes: { value: new THREE.Vector2(1, 1) },
+};
+const postMaterial = new THREE.ShaderMaterial({
+  uniforms: postUniforms,
+  depthTest: false,
+  depthWrite: false,
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = vec4(position.xy, 0.0, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float uBlock;
+    uniform float uLevels;
+    uniform float uBlur;
+    uniform vec2 uRes;
+    varying vec2 vUv;
+
+    // 取一个像素块的颜色（块中心采样 + 色阶量化）
+    vec3 blockColor(vec2 uv) {
+      vec2 px = max(uBlock, 1.0) / uRes;
+      vec2 u2 = (floor(uv / px) + 0.5) * px;
+      vec3 c = texture2D(tDiffuse, u2).rgb;
+      return floor(c * uLevels + 0.5) / uLevels;
+    }
+
+    void main() {
+      vec3 c = blockColor(vUv);
+      if (uBlur > 0.02) {
+        // 以「像素块」为单位做十字模糊：块越大，模糊半径越大
+        vec2 d = max(uBlock, 1.0) * uBlur / uRes;
+        c = c * 0.36
+          + blockColor(vUv + vec2(d.x, 0.0)) * 0.16
+          + blockColor(vUv - vec2(d.x, 0.0)) * 0.16
+          + blockColor(vUv + vec2(0.0, d.y)) * 0.16
+          + blockColor(vUv - vec2(0.0, d.y)) * 0.16;
+      }
+      gl_FragColor = vec4(c, 1.0);
+    }
+  `,
+});
+postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMaterial));
+
+let renderTarget = null;
+let usePost = false;
+
+function ensureRenderTarget() {
+  if (!renderer) return;
+  const cssW = Math.max(1, window.innerWidth);
+  const cssH = Math.max(1, window.innerHeight);
+  const w = Math.max(64, Math.min(760, Math.round(cssW * 0.62)));
+  const h = Math.max(64, Math.round(w * cssH / cssW));
+  if (renderTarget && renderTarget.width === w && renderTarget.height === h) return;
+  if (renderTarget) renderTarget.dispose();
+  renderTarget = new THREE.WebGLRenderTarget(w, h, {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: true,
+  });
+  postUniforms.tDiffuse.value = renderTarget.texture;
+  postUniforms.uRes.value.set(w, h);
+}
+
+/* ------------------------- 96px 像素取样 ------------------------- */
+const CAPTURE_SIZE = 96;
+let pixelCaptured = false;
+let spriteHeightFraction = 0.5;
+let spriteCanvasEl = null;
+let spriteBounds = null;
+let cakeRect = null;
+let finalBackgroundColor = '#F7F2FA';
+
+let measureTarget = null;
+
+
+function notifyPixelReady(dataUrl) {
+  try {
+    if (window.__birthday && window.__birthday.onPixelReady) {
+      window.__birthday.onPixelReady(dataUrl);
+    }
+  } catch (e) {
+    console.error('[cake] onPixelReady failed: ' + e);
+  }
+}
+
+function capturePixelSprite() {
+  try {
+    return capturePixelSpriteImpl();
+  } catch (e) {
+    console.error('[cake] capture failed: ' + e);
+    notifyPixelReady('');
+    return null;
+  }
+}
+
+/**
+ * 用主相机渲染蛋糕（同透视/同比例），裁出正方形后缩到 96×96：
+ * 一是作为拼豆底图，二是交给原生映射 Mard 221 生成工程。
+ * 同时记录蛋糕在屏幕上的矩形，转场首帧可与 3D 蛋糕严丝合缝。
+ */
+function capturePixelSpriteImpl() {
+  if (!renderer) {
+    notifyPixelReady('');
+    return null;
+  }
+  const mw = 180;
+  const mh = Math.max(120, Math.round(mw * window.innerHeight / window.innerWidth));
+  if (!measureTarget || measureTarget.width !== mw || measureTarget.height !== mh) {
+    if (measureTarget) measureTarget.dispose();
+    measureTarget = new THREE.WebGLRenderTarget(mw, mh, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+    });
+    measureTarget.texture.colorSpace = THREE.SRGBColorSpace;
+  }
+
+  const bgVisible = bgMesh.visible;
+  const groundVisible = ground.visible;
+  const confettiVisible = confetti.visible;
+  bgMesh.visible = false;
+  ground.visible = false;
+  confetti.visible = false;
+
+  const prevColor = new THREE.Color();
+  renderer.getClearColor(prevColor);
+  const prevAlpha = renderer.getClearAlpha();
+  renderer.setClearColor(0x000000, 0);
+  renderer.setRenderTarget(measureTarget);
+  renderer.clear();
+  renderer.render(scene, camera);
+  const buf = new Uint8Array(mw * mh * 4);
+  renderer.readRenderTargetPixels(measureTarget, 0, 0, mw, mh, buf);
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(prevColor, prevAlpha);
+  bgMesh.visible = bgVisible;
+  ground.visible = groundVisible;
+  confetti.visible = confettiVisible;
+
+  // RT -> Canvas（翻转 Y）
+  const rtCanvas = document.createElement('canvas');
+  rtCanvas.width = mw;
+  rtCanvas.height = mh;
+  const rctx = rtCanvas.getContext('2d');
+  const rtImage = rctx.createImageData(mw, mh);
+  for (let y = 0; y < mh; y++) {
+    const src = (mh - 1 - y) * mw * 4;
+    const dst = y * mw * 4;
+    rtImage.data.set(buf.subarray(src, src + mw * 4), dst);
+  }
+  rctx.putImageData(rtImage, 0, 0);
+
+  // 在渲染结果里找蛋糕包围盒
+  let minX = mw, maxX = -1, minY = mh, maxY = -1;
+  for (let y = 0; y < mh; y++) {
+    for (let x = 0; x < mw; x++) {
+      if (rtImage.data[(y * mw + x) * 4 + 3] >= 128) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxY < minY) {
+    notifyPixelReady('');
+    return null;
+  }
+
+  const bw = maxX - minX + 1;
+  const bh = maxY - minY + 1;
+  const side = Math.max(bw, bh) * 1.06;
+  const ccx = (minX + maxX + 1) / 2;
+  const ccy = (minY + maxY + 1) / 2;
+  const sx = ccx - side / 2;
+  const sy = ccy - side / 2;
+
+  // 裁正方形 → 96×96
+  const off = document.createElement('canvas');
+  off.width = CAPTURE_SIZE;
+  off.height = CAPTURE_SIZE;
+  const octx = off.getContext('2d');
+  octx.imageSmoothingEnabled = true;
+  octx.drawImage(rtCanvas, sx, sy, side, side, 0, 0, CAPTURE_SIZE, CAPTURE_SIZE);
+
+  // 内容在 96 图里的占比 / 中心
+  const toSprite = CAPTURE_SIZE / side;
+  spriteCanvasEl = off;
+  spriteBounds = {
+    minRow: Math.max(0, (minY - sy) * toSprite),
+    maxRow: Math.min(CAPTURE_SIZE, (maxY + 1 - sy) * toSprite),
+    minCol: Math.max(0, (minX - sx) * toSprite),
+    maxCol: Math.min(CAPTURE_SIZE, (maxX + 1 - sx) * toSprite),
+  };
+  spriteHeightFraction = Math.min(1, bh / side);
+  // 蛋糕在屏幕上的矩形（与取样同一次渲染，保证严丝合缝）
+  // rtImage 已翻成自上而下，所以 cy 直接用 ccy/mh，不要再取反
+  cakeRect = {
+    cx: (ccx / mw) * window.innerWidth,
+    cy: (ccy / mh) * window.innerHeight,
+    h: (bh / mh) * window.innerHeight,
+  };
+
+  // 兜底网格：直接从 96 图画布取色
+  const spriteData = octx.getImageData(0, 0, CAPTURE_SIZE, CAPTURE_SIZE);
+  const fallbackCells = new Array(CAPTURE_SIZE * CAPTURE_SIZE);
+  for (let i = 0; i < fallbackCells.length; i++) {
+    const a = spriteData.data[i * 4 + 3];
+    if (a < 128) {
+      fallbackCells[i] = null;
+      continue;
+    }
+    const r = spriteData.data[i * 4];
+    const g = spriteData.data[i * 4 + 1];
+    const b = spriteData.data[i * 4 + 2];
+    fallbackCells[i] = '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+  }
+  pattern = { width: CAPTURE_SIZE, height: CAPTURE_SIZE, cells: fallbackCells };
+  lastBeadDraw = -1;
+  beadFinalized = false;
+
+  notifyPixelReady(off.toDataURL('image/png'));
+  return pattern;
+}
+
+/* ------------------------------- 拼豆图 ------------------------------- */
+const bctx = beadCanvas.getContext('2d');
+let beadDpr = 1;
+
+/**
+ * 豆图区域：与像素化结束时 3D 蛋糕的实测尺寸/位置完全一致。
+ * 这样转场只是「像素图抬升 → 交叠成豆图」，不会出现大小跳变。
+ */
+function beadGeometry() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const side = layout.side;
+  const targetY = h * (side ? 0.50 : 0.44);
+  if (cakeRect && spriteHeightFraction > 0.08) {
+    const square = cakeRect.h / spriteHeightFraction;
+    return {
+      cx: cakeRect.cx,
+      cy: targetY,
+      area: square,
+      rise: cakeRect.cy - targetY,
+    };
+  }
+  const cx = w * (side ? 0.40 : 0.5);
+  const area = side
+    ? Math.min(w * 0.50, h * 0.78)
+    : Math.min(w * 0.92, h * 0.50);
+  return { cx, cy: targetY, area, rise: 0 };
+}
+
+function resizeBeadCanvas() {
+  beadDpr = Math.min(window.devicePixelRatio || 1, 2);
+  beadCanvas.width = Math.max(1, Math.round(window.innerWidth * beadDpr));
+  beadCanvas.height = Math.max(1, Math.round(window.innerHeight * beadDpr));
+}
+
+let lastBeadDraw = -1;
+let beadFinalized = false;
+let patternMissingLogged = false;
+
+function smoothstep(edge0, edge1, x) {
+  const t = clamp01((x - edge0) / (edge1 - edge0));
+  return t * t * (3 - 2 * t);
+}
+
+/** 把拼豆网格整体画到 beadCanvas，alpha 控制整体浮现程度。 */
+/** 把拼豆网格画到 beadCanvas；alpha 控制整体浮现程度（豆子始终清晰）。 */
+function drawBeadGrid(alpha, area, cx, cy) {
+  // 每帧重画：不先清空的话，淡入过程会逐帧叠加，豆图会“一下就到全不透明”= 看起来是硬切
+  bctx.setTransform(beadDpr, 0, 0, beadDpr, 0, 0);
+  bctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  if (!pattern || !pattern.cells || alpha <= 0.01) return;
+  const cols = pattern.width;
+  const rows = pattern.height;
+  const cell = area / Math.max(cols, rows);
+  const gridW = cell * cols;
+  const gridH = cell * rows;
+
+  // 取样方形是以蛋糕包围盒中心裁的，所以内容中心 = 网格中心
+  const ox = cx - gridW / 2;
+  const oy = cy - gridH / 2;
+
+  const gap = Math.max(0.3, cell * 0.022);
+  const beadSize = cell - gap;
+  // 小格子时收小圆角，否则四角暗缝会把整体压暗
+  const radius = beadSize * (cell >= 16 ? 0.22 : 0.11);
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const color = pattern.cells[row * cols + col];
+      if (!color) continue;
+      const x = ox + col * cell + gap / 2;
+      const y = oy + row * cell + gap / 2;
+
+      bctx.globalAlpha = alpha;
+      bctx.fillStyle = color;
+      bctx.beginPath();
+      if (bctx.roundRect) {
+        bctx.roundRect(x, y, beadSize, beadSize, radius);
+      } else {
+        bctx.rect(x, y, beadSize, beadSize);
+      }
+      bctx.fill();
+
+      // 顶部高光
+      bctx.globalAlpha = alpha * 0.28;
+      bctx.fillStyle = '#ffffff';
+      bctx.beginPath();
+      const hl = Math.max(1, beadSize * 0.16);
+      if (bctx.roundRect) {
+        bctx.roundRect(x + beadSize * 0.16, y + beadSize * 0.14, beadSize * 0.34, hl, hl / 2);
+      } else {
+        bctx.rect(x + beadSize * 0.16, y + beadSize * 0.14, beadSize * 0.34, hl);
+      }
+      bctx.fill();
+
+      // 底部暗边
+      bctx.globalAlpha = alpha * (cell >= 16 ? 0.16 : 0.08);
+      bctx.fillStyle = '#000000';
+      bctx.beginPath();
+      if (bctx.roundRect) {
+        bctx.roundRect(x + beadSize * 0.12, y + beadSize * 0.80, beadSize * 0.76, Math.max(1, beadSize * 0.12), Math.max(1, beadSize * 0.06));
+      } else {
+        bctx.rect(x + beadSize * 0.12, y + beadSize * 0.80, beadSize * 0.76, Math.max(1, beadSize * 0.12));
+      }
+      bctx.fill();
+    }
+  }
+  bctx.globalAlpha = 1;
+}
+
+/**
+ * 让画面内容整体上移：相机沿 Y 轴下移，视线方向不变，
+ * 蛋糕与背景一起平移，不会露出画布边缘，也不会有第二张蛋糕。
+ */
+function applySceneRise(px) {
+  if (!px) return;
+  const dist = camera.position.distanceTo(ctrl.target);
+  const worldPerPx =
+    (2 * dist * Math.tan((camera.fov * Math.PI) / 360)) / Math.max(1, window.innerHeight);
+  camera.position.y -= px * worldPerPx;
+}
+
+/** 豆图数据（原生回传）晚到时补画一帧，避免空窗 */
+function redrawBeads() {
+  if (t <= T.pixelEnd) return;
+  const geom = beadGeometry();
+  bctx.setTransform(beadDpr, 0, 0, beadDpr, 0, 0);
+  bctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  drawBeadGrid(smoothstep(0.30, 0.90, beadProgress), geom.area, geom.cx, geom.cy);
+}
+
+
+/* ------------------------------- 主循环 ------------------------------- */
+const clock = new THREE.Clock();
+let elapsed = 0;
+let lastPosted = -1;
+
+function postProgress(value) {
+  const p = clamp01(value);
+  if (p < 1 && Math.abs(p - lastPosted) < 0.002) return;
+  lastPosted = p;
+  try {
+    if (window.__birthday) window.__birthday.onProgress(p);
+  } catch (e) { /* ignore */ }
+}
+
+function fireComplete() {
+  try {
+    if (window.__birthday) window.__birthday.onComplete();
+  } catch (e) { /* ignore */ }
+}
+
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  resizeBeadCanvas();
+  lastBeadDraw = -1;
+  if (!renderer) return;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, QUALITY.dpr));
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  END.radius = fitRadius();
+  ensureRenderTarget();
+  // 动画结束后循环已停止，尺寸变化后要补画一次，否则豆图会空掉
+  if (t > T.pixelEnd) redrawBeads();
+}
+window.addEventListener('resize', resize);
+
+function updatePixelation(time) {
+  const start = T.holdEnd;
+  const end = T.pixelEnd;
+  if (time < start) {
+    usePost = false;
+    sceneCanvas.style.opacity = '1';
+    return;
+  }
+  usePost = true;
+  const u = clamp01((time - start) / (end - start));
+  const eased = easeInOutCubic(u);
+  ensureRenderTarget();
+  const maxBlock = renderTarget ? Math.max(2, renderTarget.width / 96) : 8;
+  postUniforms.uBlock.value = 1 + (maxBlock - 1) * eased;
+  postUniforms.uLevels.value = 64 - 50 * eased;
+}
+
+function updateBeads(time) {
+  const start = T.pixelEnd;
+  if (time < start) {
+    beadProgress = 0;
+    return;
+  }
+  // 进入转场的第一帧就地取样：此刻相机还没抬升，测到的就是像素蛋糕的真实位置
+  if (!pixelCaptured) {
+    pixelCaptured = true;
+    capturePixelSprite();
+  }
+  beadProgress = clamp01((time - start) / T.bead);
+  const p = beadProgress;
+  const geom = beadGeometry();
+
+  // 1) 像素图抬升：与模糊同时开始、同时结束
+  const rise = easeInOutCubic(clamp01(p / 0.66));
+  applySceneRise(geom.rise * rise);
+
+  // 2) 像素图模糊：0 → 峰值 → 0，最后重新变清晰，正好被清晰的豆图接管
+  //    （sin^0.7 让峰值附近有个平台，模糊停留更久一点，但不过糊）
+  postUniforms.uBlur.value = 1.15 * Math.pow(Math.sin(Math.PI * clamp01(p / 0.94)), 0.7);
+
+  // 背景转成米黄后，14 级色阶会把渐变切出硬带，转场里把色阶放宽
+  postUniforms.uLevels.value = lerp(14, 110, easeInOutCubic(clamp01(p / 0.45)));
+
+  // 3) 像素块逐渐变粗到豆格大小，交叠时两种网格不打架
+  const rtW = renderTarget ? renderTarget.width : 0;
+  const cssToRt = rtW / Math.max(1, window.innerWidth);
+  const baseBlock = rtW ? Math.max(2, rtW / 96) : 2;
+  const beadBlock = (geom.area / 96) * cssToRt;
+  postUniforms.uBlock.value = lerp(
+    baseBlock,
+    Math.max(baseBlock, beadBlock),
+    easeInOutCubic(clamp01(p / 0.55))
+  );
+
+  // 4) 背景：3js 紫 → 拼豆页米黄，贯穿整个转场（不是硬切）
+  bgUniforms.uBg.value = easeInOutCubic(clamp01((p - 0.10) / 0.74));
+
+  // 5) 地上软阴影随抬升淡出
+  if (ground && ground.material) {
+    ground.material.opacity = 0.9 * (1 - clamp01(p / 0.45));
+  }
+
+  // 6) 3D 画面淡出、豆图淡入；两者几何完全重合，看起来是像素图“变成”豆图
+  if (p >= 0.88) {
+    // 豆图已经完整，3D 层切到「只保留彩带」，再淡入回来
+    enterConfettiStage();
+    sceneCanvas.style.opacity = String(clamp01((p - 0.90) / 0.10));
+  } else {
+    sceneCanvas.style.opacity = String(1 - smoothstep(0.58, 0.88, p));
+  }
+  beadCanvas.style.opacity = '1';
+
+  if (!pattern && !patternMissingLogged) {
+    patternMissingLogged = true;
+    console.error('[cake] pattern missing at bead phase');
+  }
+
+  drawBeadGrid(smoothstep(0.30, 0.90, p), geom.area, geom.cx, geom.cy);
+
+  if (p >= 1 && !beadFinalized) {
+    beadFinalized = true;
+    drawBeadGrid(1, geom.area, geom.cx, geom.cy);
+  }
+}
+
+/* 拼豆阶段：3D 层只保留彩带，叠在豆图上方继续飘；取景时彩带是隐藏的，不会进工程 */
+let confettiOnly = false;
+// 彩带保留转场那种柔化观感（转场里最后约 4~8px，这里固定 6px）
+const CONFETTI_BLUR_PX = 6;
+
+function enterConfettiStage() {
+  if (confettiOnly) return;
+  confettiOnly = true;
+  cake.visible = false;
+  bgMesh.visible = false;
+  ground.visible = false;
+  confetti.visible = true;
+  // 提到豆图上层，彩带才能压在豆图上
+  sceneCanvas.style.zIndex = '3';
+  // 保留转场里的柔化观感：彩带继续带着模糊，不要突然变清晰
+  sceneCanvas.style.filter = 'blur(' + CONFETTI_BLUR_PX + 'px)';
+}
+
+function leaveConfettiStage() {
+  confettiOnly = false;
+  cake.visible = true;
+  bgMesh.visible = true;
+  ground.visible = true;
+  confetti.visible = true;
+  sceneCanvas.style.zIndex = '';
+  sceneCanvas.style.filter = '';
+  if (renderer) renderer.setClearColor(0x000000, 1);
+  usePost = false;
+}
+
+function renderFrame() {
+  if (!renderer) return;
+  if (confettiOnly) {
+    // 透明底，只画彩带
+    renderer.setRenderTarget(null);
+    renderer.setClearColor(0x000000, 0);
+    renderer.render(scene, camera);
+    return;
+  }
+  renderer.setClearColor(0x000000, 1);
+  if (usePost && renderTarget) {
+    renderer.setRenderTarget(renderTarget);
+    renderer.clear();
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    renderer.render(postScene, postCamera);
+  } else {
+    renderer.setRenderTarget(null);
+    renderer.render(scene, camera);
+  }
+}
+
+let veilHidden = false;
+function hideVeil() {
+  if (veilHidden) return;
+  veilHidden = true;
+  veil.style.opacity = '0';
+  setTimeout(() => { veil.style.display = 'none'; }, 950);
+}
+
+let running = false;
+
+function updateConfetti(dt) {
+  confettiData.forEach(c => {
+    c.mesh.position.y = c.baseY + Math.sin(elapsed * c.speed + c.phase) * 0.55;
+    c.mesh.position.x += c.drift * dt * 0.35;
+    if (c.mesh.position.x > 10) c.mesh.position.x = -10;
+    if (c.mesh.position.x < -10) c.mesh.position.x = 10;
+    c.mesh.rotation.z += c.spin * dt;
+    c.mesh.rotation.y += c.spin * dt * 0.7;
+  });
+}
+
+let idleAcc = 0;
+
+function tick() {
+  if (!running) return;
+  requestAnimationFrame(tick);
+  let dt = Math.min(clock.getDelta(), 0.05);
+  if (paused) return;
+
+  // 动画播完后循环不停：拼豆图上还要继续飘彩带。
+  // 这时只剩 28 个彩带面片，降到 ~30fps 省电。
+  if (completed) {
+    idleAcc += dt;
+    if (idleAcc < 1 / 30) return;
+    dt = idleAcc;
+    idleAcc = 0;
+  }
+
+  elapsed += dt;
+
+  if (!completed) {
+    t = Math.min(T.total, t + dt);
+
+    updateCamera(t);
+
+    flames.forEach((f, i) => {
+      const p = f.userData.phase;
+      const s = 1 + Math.sin(elapsed * 11 + p) * 0.10 + Math.sin(elapsed * 23 + p * 2) * 0.04;
+      f.scale.set(s, 1 + Math.sin(elapsed * 9 + p) * 0.13, s);
+      f.rotation.z = Math.sin(elapsed * 6.5 + p) * 0.09;
+      flameLights[i].intensity = 0.85 + Math.sin(elapsed * 13 + p) * 0.25;
+    });
+
+    cake.position.y = Math.sin(elapsed * 1.1) * 0.016;
+    berryMain.rotation.y = Math.sin(elapsed * 0.9) * 0.1;
+  }
+
+  // 彩带：始终播放（像素化之后继续飘在豆图上）
+  updateConfetti(dt);
+
+  if (!completed) {
+    updatePixelation(t);
+    updateBeads(t);
+  }
+  renderFrame();
+  hideVeil();
+  if (!completed) postProgress(t / T.total);
+
+  if (t >= T.total && !completed) {
+    completed = true;
+    fireComplete();
+  }
+}
+
+function startLoop() {
+  if (running) return;
+  running = true;
+  clock.getDelta();
+  tick();
+}
+
+/* ------------------------------- 对外 API ------------------------------- */
+function resetScene() {
+  running = false;
+  leaveConfettiStage();
+  idleAcc = 0;
+  t = 0;
+  elapsed = 0;
+  completed = false;
+  beadFinalized = false;
+  beadProgress = 0;
+  pixelCaptured = false;
+  spriteHeightFraction = 0.5;
+  spriteCanvasEl = null;
+  spriteBounds = null;
+  cakeRect = null;
+  pattern = null;
+  lastBeadDraw = -1;
+  lastPosted = -1;
+  usePost = false;
+  postUniforms.uBlock.value = 1;
+  postUniforms.uLevels.value = 255;
+  postUniforms.uBlur.value = 0;
+  bgUniforms.uBg.value = 0;
+  if (ground && ground.material) ground.material.opacity = 0.9;
+  sceneCanvas.style.opacity = '1';
+  beadCanvas.style.opacity = '0';
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  bctx.clearRect(0, 0, beadCanvas.width, beadCanvas.height);
+  clock.getDelta();
+}
+
+window.birthdayCake = {
+  setPattern(payload) {
+    try {
+      const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
+      if (data && data.palette && Array.isArray(data.cells)) {
+        // 原生回传：色板索引数组，映射成十六进制
+        const pal = data.palette;
+        pattern = {
+          width: data.w || data.width,
+          height: data.h || data.height,
+          cells: data.cells.map(i => (i == null || i < 0 ? null : pal[i])),
+        };
+      } else {
+        pattern = data;
+      }
+      lastBeadDraw = -1;
+      beadFinalized = false;
+      console.log('[cake] setPattern ' + pattern.width + 'x' + pattern.height);
+      if (t > T.pixelEnd) redrawBeads();
+    } catch (e) { console.error('[cake] setPattern failed: ' + e); }
+  },
+  setLayout(payload) {
+    layout.side = !!(payload && payload.side);
+    lastBeadDraw = -1;
+    if (t > T.pixelEnd) redrawBeads();
+  },
+  /** 原生传入拼豆项目页的背景色，转场时渐变到该颜色（仅展示） */
+  setFinalBackground(hex) {
+    try {
+      if (typeof hex === 'string' && hex.charAt(0) === '#') {
+        finalBackgroundColor = hex;
+        finalBg.style.background = hex;
+      }
+    } catch (e) { /* ignore */ }
+  },
+  restart() {
+    resetScene();
+    startLoop();
+  },
+  skip() {
+    if (completed) return;
+    t = T.total;
+    updateCamera(t);
+    updatePixelation(t);
+    updateBeads(t);
+    renderFrame();
+    postProgress(1);
+    if (!completed) {
+      completed = true;
+      running = false;
+      fireComplete();
+    }
+  },
+  pause() { paused = true; },
+  resume() { paused = false; clock.getDelta(); },
+};
+
+/* ------------------------------- 启动 ------------------------------- */
+resize();
+updateCamera(0);
+renderFrame();
+hideVeil();
+
+try {
+  if (window.__birthday) window.__birthday.onReady();
+} catch (e) { console.error('[cake] onReady failed: ' + e); }
+
+startLoop();
+</script>
+</body>
+</html>
