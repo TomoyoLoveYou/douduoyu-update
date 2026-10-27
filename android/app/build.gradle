@@ -2,7 +2,13 @@ apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 
 def appIconWorkspaceDir = new File(rootProject.rootDir, '../../output/imagegen').canonicalFile
-def curatedAppIconDir = new File(appIconWorkspaceDir, 'app-icons')
+// 图标源图优先用仓库内的 android/app-icons —— 这样重新 clone 下来就能直接构建；
+// 仓库里没有时才回退到 workspace 的 imagegen 输出目录。
+def repoAppIconDir = new File(rootProject.rootDir, 'app-icons')
+def curatedAppIconDir =
+    (repoAppIconDir.isDirectory() && repoAppIconDir.listFiles()?.any { it.isFile() })
+        ? repoAppIconDir
+        : new File(appIconWorkspaceDir, 'app-icons')
 def generatedAppIconRootDir = new File(buildDir, 'generated/app-icons')
 def generatedAppIconResDir = new File(generatedAppIconRootDir, 'res')
 def generatedAppIconDrawableDir = new File(generatedAppIconResDir, 'drawable-nodpi')
@@ -15,7 +21,7 @@ def appIconManifestTemplateFile = file('src/main/AndroidManifest.xml')
 def supportedAppIconExtensions = ['png', 'webp'] as Set
 def launcherIconPaddingFraction = 0.04d
 def splashIconPaddingFraction = 0.16d
-def generatedAppIconCanvasSize = 1024
+def generatedAppIconCanvasSize = 512
 def defaultAppIconId = 'fish_left_official_rose_transparent'
 
 def loadAppIconSourceFiles = {
@@ -399,8 +405,8 @@ android {
         applicationId "com.douduoyu.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 10
-        versionName "1.9"
+        versionCode 11
+        versionName "1.10"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'

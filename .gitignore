@@ -36,6 +36,11 @@ lint/generated/
 lint/outputs/
 lint/tmp/
 
+# 本地调试产物（截图、图标生成中间文件、归档的旧文件）
+_shots/
+_iconwork/
+_old/
+
 # Packaged artifacts
 *.apk
 *.aab

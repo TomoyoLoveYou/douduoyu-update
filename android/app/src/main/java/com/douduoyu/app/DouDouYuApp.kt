@@ -300,6 +300,7 @@ private enum class SettingsPage {
     Home,
     Redemption,
     Celebration,
+    XiangXiang,
     ColorConfidence,
     Debt,
 }
@@ -637,6 +638,7 @@ fun DouDouYuApp() {
             val appIconManager = remember(context) { AppIconManager(context) }
             val birthdayCelebrationStore = remember(context) { BirthdayCelebrationStore(context) }
             val birthdayAnimationDeveloperStore = remember(context) { BirthdayAnimationDeveloperStore(context) }
+            val xiangXiangGiftStore = remember(context) { XiangXiangGiftStore(context) }
 
             var screen by remember { mutableStateOf(AppScreen.Home) }
             var customColorSchemes by remember { mutableStateOf(initialCustomColorSchemes) }
@@ -676,6 +678,9 @@ fun DouDouYuApp() {
             var isBirthdayCelebrationRedeemed by remember {
                 mutableStateOf(birthdayCelebrationStore.isRedeemed())
             }
+            var isXiangXiangGiftRedeemed by remember {
+                mutableStateOf(xiangXiangGiftStore.isRedeemed())
+            }
             var isAnimationDeveloperModeEnabled by remember {
                 mutableStateOf(birthdayAnimationDeveloperStore.isUnlocked())
             }
@@ -714,7 +719,11 @@ fun DouDouYuApp() {
             var pendingGalleryGridSettings by remember { mutableStateOf<GridGuideSettings?>(null) }
 
             LaunchedEffect(appIconManager) {
-                selectedAppIconId = appIconManager.reconcileSelection()
+                // 图标对齐要批量启用/禁用 30 多个组件，放到 IO 线程，别卡首帧
+                selectedAppIconId =
+                    withContext(Dispatchers.IO) {
+                        appIconManager.reconcileSelection()
+                    }
             }
 
             LaunchedEffect(currentProject?.id) {
@@ -993,6 +1002,15 @@ fun DouDouYuApp() {
                 if (redeemed) {
                     isBirthdayCelebrationRedeemed = true
                     statusText = "生日祝福已解锁。"
+                }
+                return redeemed
+            }
+
+            fun redeemXiangXiangGiftCode(passcode: String): Boolean {
+                val redeemed = xiangXiangGiftStore.redeem(passcode)
+                if (redeemed) {
+                    isXiangXiangGiftRedeemed = true
+                    statusText = "小鱼寄语已解锁。"
                 }
                 return redeemed
             }
@@ -2805,6 +2823,8 @@ fun DouDouYuApp() {
                                         selectedIconId = selectedAppIconId,
                                         isBirthdayCelebrationRedeemed = isBirthdayCelebrationRedeemed,
                                         onRedeemBirthdayCode = ::redeemBirthdayCode,
+                                        isXiangXiangGiftRedeemed = isXiangXiangGiftRedeemed,
+                                        onRedeemXiangXiangGiftCode = ::redeemXiangXiangGiftCode,
                                         onSaveBirthdayProject = ::saveBirthdayCelebrationProject,
                                         isAnimationDeveloperModeEnabled = isAnimationDeveloperModeEnabled,
                                         animationQualityOverride = animationQualityOverride,
@@ -2812,6 +2832,7 @@ fun DouDouYuApp() {
                                         onSelectAnimationQuality = ::saveAnimationQualityOverride,
                                         onOpenCustomColorSchemes = { openCustomColorSchemeManager() },
                                         onSelectIcon = { option ->
+                                            // 切换会重建任务（只留一个启动入口），之后应用回到首页
                                             val switched = appIconManager.applyIcon(option.id)
                                             if (switched) {
                                                 selectedAppIconId = option.id
@@ -3471,6 +3492,8 @@ private fun SettingsScreen(
     selectedIconId: String,
     isBirthdayCelebrationRedeemed: Boolean,
     onRedeemBirthdayCode: (String) -> Boolean,
+    isXiangXiangGiftRedeemed: Boolean,
+    onRedeemXiangXiangGiftCode: (String) -> Boolean,
     onSaveBirthdayProject: (BeadProject) -> Unit,
     isAnimationDeveloperModeEnabled: Boolean,
     animationQualityOverride: BirthdayAnimationQuality?,
@@ -3510,6 +3533,11 @@ private fun SettingsScreen(
         return
     }
 
+    if (currentPage == SettingsPage.XiangXiang) {
+        XiangXiangScreen(onBack = { onPageChange(SettingsPage.Home) })
+        return
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             topBar = {
@@ -3519,6 +3547,7 @@ private fun SettingsScreen(
                             SettingsPage.Home -> "设置"
                             SettingsPage.Redemption -> "兑换码"
                             SettingsPage.Celebration -> "生日祝福"
+                            SettingsPage.XiangXiang -> "小鱼生快"
                             SettingsPage.ColorConfidence -> "颜色置信度"
                             SettingsPage.Debt -> "负债"
                         },
@@ -3608,6 +3637,8 @@ private fun SettingsScreen(
                         extraBottomPadding = extraBottomPadding,
                         isRedeemed = isBirthdayCelebrationRedeemed,
                         onRedeem = onRedeemBirthdayCode,
+                        isXiangXiangGiftRedeemed = isXiangXiangGiftRedeemed,
+                        onRedeemXiangXiangGiftCode = onRedeemXiangXiangGiftCode,
                         isAnimationDeveloperModeEnabled = isAnimationDeveloperModeEnabled,
                         animationQualityOverride = animationQualityOverride,
                         onRedeemAnimationDeveloperCode = onRedeemAnimationDeveloperCode,
@@ -3615,9 +3646,14 @@ private fun SettingsScreen(
                         onOpenCelebration = {
                             onPageChange(SettingsPage.Celebration)
                         },
+                        onOpenXiangXiang = {
+                            onPageChange(SettingsPage.XiangXiang)
+                        },
                     )
 
                 SettingsPage.Celebration -> Unit
+
+                SettingsPage.XiangXiang -> Unit
 
                 SettingsPage.ColorConfidence ->
                     ColorConfidenceSettingsPage(
@@ -3929,11 +3965,14 @@ private fun BirthdayRedemptionSettingsPage(
     extraBottomPadding: Dp,
     isRedeemed: Boolean,
     onRedeem: (String) -> Boolean,
+    isXiangXiangGiftRedeemed: Boolean,
+    onRedeemXiangXiangGiftCode: (String) -> Boolean,
     isAnimationDeveloperModeEnabled: Boolean,
     animationQualityOverride: BirthdayAnimationQuality?,
     onRedeemAnimationDeveloperCode: (String) -> Boolean,
     onSelectAnimationQuality: (BirthdayAnimationQuality?) -> Unit,
     onOpenCelebration: () -> Unit,
+    onOpenXiangXiang: () -> Unit,
 ) {
     var code by rememberSaveable { mutableStateOf("") }
     var hasInvalidCode by rememberSaveable { mutableStateOf(false) }
@@ -3942,6 +3981,13 @@ private fun BirthdayRedemptionSettingsPage(
         if (birthdayRedeemed) {
             hasInvalidCode = false
             onOpenCelebration()
+            return
+        }
+        // 小鱼寄语：与生日祝福并列的独立兑换码，命中后直接进整页视频
+        val xiangXiangRedeemed = onRedeemXiangXiangGiftCode(code)
+        if (xiangXiangRedeemed) {
+            hasInvalidCode = false
+            onOpenXiangXiang()
             return
         }
         val developerUnlocked = onRedeemAnimationDeveloperCode(code)
@@ -3986,6 +4032,37 @@ private fun BirthdayRedemptionSettingsPage(
                     )
                     Button(
                         onClick = onOpenCelebration,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("观看生日祝福")
+                    }
+                }
+            }
+        }
+        if (isXiangXiangGiftRedeemed) {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.CardGiftcard,
+                        contentDescription = null,
+                        modifier = Modifier.size(36.dp),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Text(
+                        text = "小鱼生日快乐",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Button(
+                        onClick = onOpenXiangXiang,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text("观看生日祝福")

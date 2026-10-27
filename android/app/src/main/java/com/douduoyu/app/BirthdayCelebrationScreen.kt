@@ -218,7 +218,6 @@ internal fun BirthdayCelebrationScreen(
 
             if (messageAlpha > 0.002f) {
                 BirthdayMessagePanel(
-                    nickname = config.nickname,
                     message = config.message,
                     actionsEnabled = effectiveComplete,
                     onReplay = {
@@ -256,7 +255,6 @@ internal fun BirthdayCelebrationScreen(
 
 @Composable
 private fun BirthdayMessagePanel(
-    nickname: String,
     message: String,
     actionsEnabled: Boolean,
     onReplay: () -> Unit,
@@ -299,7 +297,7 @@ private fun BirthdayMessagePanel(
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        text = "愿每一颗拼豆，都把${nickname}今天的快乐拼得更完整。",
+                        text = "天要下雨，娘要嫁人，鱼跃龙门，奈何不得",
                         style = MaterialTheme.typography.bodyMedium,
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
