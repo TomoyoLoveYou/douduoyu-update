@@ -4,27 +4,26 @@
   "packageName": "com.douduoyu.app",
   "channel": "stable",
   "latest": {
-    "versionCode": 10,
-    "versionName": "1.9",
-    "publishedAt": "2026-10-20",
+    "versionCode": 11,
+    "versionName": "1.10",
+    "publishedAt": "2026-10-27",
     "minSupportedVersionCode": 1,
     "forceUpdate": false,
-    "title": "\u62fc\u8c46\u9c7c 1.9",
-    "summary": "\u68cb\u76d8\u7f29\u653e\u4e0e\u624b\u52bf\u4f53\u9a8c\u5347\u7ea7\u3002",
+    "title": "\u62fc\u8c46\u9c7c 1.10",
+    "summary": "\u8f6f\u4ef6\u56fe\u6807\u5207\u6362\u4e0e\u542f\u52a8\u7a33\u5b9a\u6027\u4fee\u590d\u3002",
     "changelog": [
-      "\u53cc\u6307\u7f29\u653e\u6539\u4e3a\u4ee5\u4e24\u6307\u4e2d\u5fc3\u4e3a\u951a\u70b9\uff0c\u653e\u5927\u7f29\u5c0f\u90fd\u4fdd\u6301\u6307\u4e0b\u7684\u683c\u5b50\u4e0d\u52a8",
-      "\u624b\u52bf\u8282\u70b9\u4e0d\u518d\u968f\u7f29\u653e\u91cd\u5efa\uff0c\u7f29\u653e\u66f4\u8fde\u8d2f",
-      "\u5355\u6307\u62d6\u52a8\u677e\u624b\u540e\u652f\u6301\u60ef\u6027\u6ed1\u52a8",
-      "\u4fee\u590d\u521b\u5efa\u6d41\u7a0b\uff08\u56fe\u7247\u8f6c\u56fe\u7eb8 / \u56fe\u7eb8\u8bc6\u522b\uff09\u6309\u7cfb\u7edf\u8fd4\u56de\u76f4\u63a5\u9000\u51fa\u5e94\u7528",
+      "\u5207\u6362\u8f6f\u4ef6\u56fe\u6807\u540e\u684c\u9762\u4e0d\u518d\u6b8b\u7559\u65e7\u56fe\u6807\uff08\u6b64\u524d\u53ef\u80fd\u540c\u65f6\u51fa\u73b0\u4e24\u4e2a\uff09",
+      "\u4fee\u590d\u5207\u6362\u56fe\u6807\u65f6\u5e94\u7528\u4f1a\u88ab\u7cfb\u7edf\u4e00\u8d77\u7ed3\u675f\u7684\u95ee\u9898",
+      "\u542f\u52a8\u5165\u53e3\u6536\u655b\u4e3a\u5355\u4e00\u5165\u53e3\uff0c\u51b7\u542f\u52a8\u4e0e\u6700\u8fd1\u4efb\u52a1\u663e\u793a\u66f4\u7a33\u5b9a",
       "\u90e8\u5206\u754c\u9762\u7ec6\u8282\u4e0e\u7a33\u5b9a\u6027\u4f18\u5316"
     ],
     "download": {
-      "pageUrl": "https://wwaqe.lanzn.com/ik1E14cmox5g",
+      "pageUrl": "https://wwaqe.lanzn.com/i4p174dlwned",
       "password": "xiaoyu",
-      "apkUrl": "https://github.com/TomoyoLoveYou/douduoyu-update/releases/download/v1.9/douduoyu-1.9.apk",
+      "apkUrl": "https://github.com/TomoyoLoveYou/douduoyu-update/releases/download/v1.10/douduoyu-1.10.apk",
       "mirrorUrls": [],
-      "sha256": "ad2aa4e1f1827f2b99975220a468dcc4280be610e298555784a2c70acdf08d08",
-      "sizeBytes": 26135430
+      "sha256": "a2f6638a11ccfa990f70dcdbb4c8b5b89acb34d5ee2993b6ec9904a466d04ba0",
+      "sizeBytes": 22661081
     }
   }
 }
